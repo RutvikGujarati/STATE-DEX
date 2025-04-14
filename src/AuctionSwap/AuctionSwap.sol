@@ -20,6 +20,16 @@ interface IPair {
 contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     using SafeERC20 for IERC20;
     IERC20 public dav;
+
+    //For Airdrop
+    uint256 private constant PRECISION = 1e18;
+    uint256 public totalRewardDistributed;
+    mapping(address => uint256) public userBaseReward;
+    mapping(address => uint256) public lastDavMintTime;
+    mapping(address => uint256) public lastDavHolding;
+    mapping(address => uint256) public cumulativeMintableHoldings;
+    mapping(address => uint256) public cumulativeDavHoldings;
+    uint256 public totalAirdropMinted;
     uint256 public constant AUCTION_INTERVAL = 50 days;
     uint256 public constant REVERSE_AUCTION_INTERVAL = 200 days;
     uint256 public constant AUCTION_DURATION = 24 hours;
@@ -47,12 +57,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     uint256 public TotalBurnedStates;
     uint256 public TotalTokensBurned;
     uint256 public totalBounty;
-    uint256 private constant COOLDOWN_PERIOD = 24 hours;
-
-    struct Vault {
-        uint256 totalDeposited;
-        uint256 totalAuctioned;
-    }
 
     struct AuctionCycle {
         uint256 firstAuctionStart;
@@ -66,7 +70,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         uint256 cycle;
     }
 
-    mapping(address => Vault) public vaults; // token => Vault
     mapping(address => mapping(address => bool)) public approvals; // user => spender => approved
     mapping(address => mapping(address => mapping(address => mapping(uint256 => UserSwapInfo))))
         public userSwapTotalInfo; // user => inputToken => stateToken => cycle => UserSwapInfo
@@ -81,6 +84,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         address stateToken
     );
     event TokensDeposited(address indexed token, uint256 amount);
+    event RewardDistributed(address indexed user, uint256 amount);
     event TokensSwapped(
         address indexed user,
         address indexed inputToken,
@@ -172,6 +176,93 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         return ratio;
     }
+    /**
+     * @dev Calculate the base reward for a given DAV amount.
+     */
+    function calculateBaseReward(
+        uint256 davAmount,
+        address inputToken
+    ) public view returns (uint256) {
+        require(supportedTokens[inputToken], "Unsupported token");
+        uint256 supply_p = maxSupplies[inputToken] * 10; // 10x max supply for scaling
+        uint256 denominator = 5e9; // Equivalent to 5000000 * 1000
+        uint256 precisionFactor = 1e18; // Scaling factor for precision
+
+        uint256 baseReward;
+
+        if (davAmount > type(uint256).max / supply_p) {
+            // Avoid overflow by scaling first
+            baseReward =
+                ((davAmount * precisionFactor) / denominator) *
+                (supply_p / precisionFactor);
+        } else {
+            // Normal calculation with precision
+            baseReward =
+                (davAmount * supply_p) /
+                (denominator * precisionFactor);
+        }
+
+        return baseReward;
+    }
+
+    /**
+     * @dev Distribute reward for a user's DAV holdings.
+     */
+    function distributeReward(
+        address user,
+        address inputToken
+    ) external nonReentrant {
+        // **Checks**
+        require(user != address(0), "Invalid user address");
+        require(supportedTokens[inputToken], "Unsupported token");
+        require(msg.sender == user, "Invalid sender");
+        uint256 currentDavHolding = dav.balanceOf(user);
+        uint256 lastHolding = lastDavHolding[user];
+        uint256 newDavContributed = currentDavHolding > lastHolding
+            ? currentDavHolding - lastHolding
+            : 0;
+        require(newDavContributed > 0, "No new DAV holdings");
+
+        // **Effects**
+        uint256 baseReward = calculateBaseReward(newDavContributed, inputToken);
+        userBaseReward[user] += baseReward; // Accumulate reward
+        cumulativeDavHoldings[user] += newDavContributed;
+        lastDavHolding[user] = currentDavHolding;
+
+        emit RewardDistributed(user, baseReward);
+    }
+
+    /**
+     * @dev Claim accumulated reward in inputToken.
+     */
+    function mintReward(address inputToken) external nonReentrant {
+        // **Checks**
+        require(supportedTokens[inputToken], "Unsupported token");
+        uint256 reward = userBaseReward[msg.sender];
+        require(reward > 0, "No reward to claim");
+        require(cumulativeDavHoldings[msg.sender] > 0, "No recorded holdings");
+
+        // Check contract's balance of inputToken
+        require(
+            IERC20(inputToken).balanceOf(address(this)) >= reward,
+            "Insufficient token balance in contract"
+        );
+
+        // Cap reward at 10% of maxSupplies[inputToken]
+        require(
+            totalRewardDistributed + reward <=
+                (maxSupplies[inputToken] * 10) / 100,
+            "Reward cap exceeded"
+        );
+
+        // **Effects**
+        userBaseReward[msg.sender] = 0;
+        cumulativeDavHoldings[msg.sender] = 0; // Reset after claiming
+        totalRewardDistributed += reward;
+
+        // **Interactions**
+        IERC20(inputToken).safeTransfer(msg.sender, reward);
+    }
 
     function getNextAuctionStartTime(
         address inputToken
@@ -193,7 +284,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         // Align to 18:30 IST
         uint256 dayStart = (nextCycleStart / 86400) * 86400; // Start of the day
         uint256 localDayStart = dayStart + TIMEZONE_OFFSET; // Adjust to IST (GMT+5:30)
-        uint256 alignedStart = localDayStart + (18.5 * 3600); // Set to 18:30 IST
+        uint256 alignedStart = localDayStart + (7.5 * 3600); // Set to 18:30 IST
 
         // If alignedStart is in the past, move to next day
         if (alignedStart <= currentTime) {
@@ -250,9 +341,8 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         );
         require(amountOut > 0, "Output amount must be greater than zero");
 
-        Vault storage vaultOut = vaults[tokenOut];
         require(
-            vaultOut.totalDeposited >= vaultOut.totalAuctioned + amountOut,
+            IERC20(stateToken).balanceOf(address(this)) >= amountOut,
             "Insufficient tokens in vault for the output token"
         );
 
@@ -264,12 +354,11 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         }
 
         userSwapInfo.cycle = currentAuctionCycle;
-        vaultOut.totalAuctioned += amountOut;
 
         if (isReverseActive) {
             userSwapInfo.hasReverseSwap = true;
             require(
-                vaults[tokenOut].totalDeposited > 0,
+                IERC20(tokenOut).balanceOf(address(this)) > 0,
                 "Output token vault empty"
             );
             IERC20(tokenIn).safeTransferFrom(user, BURN_ADDRESS, amountIn);
@@ -279,7 +368,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         } else {
             userSwapInfo.hasSwapped = true;
             require(
-                vaults[tokenOut].totalDeposited > 0,
+                IERC20(tokenOut).balanceOf(address(this)) > 0,
                 "Output token vault empty"
             );
             IERC20(tokenIn).safeTransferFrom(user, BURN_ADDRESS, amountIn);
