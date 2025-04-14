@@ -25,8 +25,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     uint256 public constant AUCTION_DURATION = 24 hours;
     uint256 public constant REVERSE_DURATION = 24 hours;
     uint256 public constant MAX_AUCTIONS = 56;
-    uint256 public constant TIMEZONE_OFFSET = 0; // GMT+5:30 in seconds (5.5 hours * 3600)
-    uint256 public constant AUCTION_START_HOUR = 8;
+    uint256 public constant TIMEZONE_OFFSET = 19800; // GMT+5:30 in seconds (5.5 hours * 3600)
     uint256 public percentage = 1;
     address private constant BURN_ADDRESS =
         0x0000000000000000000000000000000000000369;
@@ -122,8 +121,16 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         maxSupplies[token] = maxSupply;
         pairAddresses[token] = pairAddress;
 
-        // Start auction immediately at current block timestamp
-        uint256 auctionStart = block.timestamp;
+        // Schedule first auction at 18:30 IST (GMT+5:30)
+        uint256 currentTime = block.timestamp;
+        uint256 currentDayStart = (currentTime / 86400) * 86400; // Start of current day in UTC
+        uint256 localDayStart = currentDayStart + TIMEZONE_OFFSET; // Adjust to IST (GMT+5:30)
+        uint256 auctionStart = localDayStart + (7.5 * 3600); // Set to 18:30 IST (18.5 hours)
+
+        // If current time is past 18:30 IST, schedule for next day
+        if (currentTime >= auctionStart) {
+            auctionStart += 86400; // Add 1 day
+        }
 
         AuctionCycle storage cycle = auctionCycles[token][stateToken];
         cycle.firstAuctionStart = auctionStart;
@@ -178,15 +185,15 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         uint256 timeSinceFirst = currentTime - cycle.firstAuctionStart;
         uint256 currentCycle = timeSinceFirst / AUCTION_INTERVAL;
 
-        // Calculate next auction start (every 50 days at 15:00 IST)
+        // Calculate next auction start (every 50 days at 18:30 IST)
         uint256 nextCycleStart = cycle.firstAuctionStart +
             (currentCycle + 1) *
             AUCTION_INTERVAL;
 
-        // Align to 15:00 IST
+        // Align to 18:30 IST
         uint256 dayStart = (nextCycleStart / 86400) * 86400; // Start of the day
         uint256 localDayStart = dayStart + TIMEZONE_OFFSET; // Adjust to IST (GMT+5:30)
-        uint256 alignedStart = localDayStart + (15 * 3600); // Set to 15:00 IST
+        uint256 alignedStart = localDayStart + (18.5 * 3600); // Set to 18:30 IST
 
         // If alignedStart is in the past, move to next day
         if (alignedStart <= currentTime) {
