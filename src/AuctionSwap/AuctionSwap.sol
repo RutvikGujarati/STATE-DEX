@@ -11,7 +11,9 @@ interface IPair {
         external
         view
         returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+
     function token0() external view returns (address);
+
     function token1() external view returns (address);
 }
 
@@ -23,8 +25,8 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     uint256 public constant AUCTION_DURATION = 24 hours;
     uint256 public constant REVERSE_DURATION = 24 hours;
     uint256 public constant MAX_AUCTIONS = 56;
-    uint256 public constant DUBAI_TIMEZONE_OFFSET = 4 hours; // UTC+4
-    uint256 public constant AUCTION_START_HOUR = 17; // 17:00 Dubai time
+    uint256 public constant TIMEZONE_OFFSET = 0; // GMT+5:30 in seconds (5.5 hours * 3600)
+    uint256 public constant AUCTION_START_HOUR = 8;
     uint256 public percentage = 1;
     address private constant BURN_ADDRESS =
         0x0000000000000000000000000000000000000369;
@@ -93,14 +95,17 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         address pairAddress
     );
 
-    constructor(address state, address davToken, address _gov) {
+    constructor(address _gov) {
         governanceAddress = _gov;
-        stateToken = state;
     }
 
-    function setTokenAddress(address token) external onlyGovernance {
+    function setTokenAddress(
+        address state,
+        address token
+    ) external onlyGovernance {
         require(token != address(0), "Invalid token address");
         dav = IERC20(payable(token));
+        stateToken = state;
     }
 
     function addToken(
@@ -117,21 +122,13 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         maxSupplies[token] = maxSupply;
         pairAddresses[token] = pairAddress;
 
-        // Schedule first auction at 17:00 Dubai time
-        uint256 currentTime = block.timestamp;
-        uint256 currentDayStart = (currentTime / 1 days) * 1 days;
-        uint256 dubaiTime = currentDayStart + DUBAI_TIMEZONE_OFFSET;
-        uint256 auctionStart = dubaiTime + AUCTION_START_HOUR * 1 hours;
-
-        // If current time is past 17:00 Dubai time, schedule for next day
-        if (currentTime >= auctionStart) {
-            auctionStart += 1 days;
-        }
+        // Start auction immediately at current block timestamp
+        uint256 auctionStart = block.timestamp;
 
         AuctionCycle storage cycle = auctionCycles[token][stateToken];
         cycle.firstAuctionStart = auctionStart;
         cycle.isInitialized = true;
-        cycle.auctionCount = 0; // Will increment when auction becomes active
+        cycle.auctionCount = 0;
 
         auctionCycles[stateToken][token] = AuctionCycle({
             firstAuctionStart: auctionStart,
@@ -178,37 +175,27 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         }
 
         uint256 currentTime = block.timestamp;
-        uint256 currentDayStart = (currentTime / 1 days) * 1 days;
-        uint256 dubaiTime = currentDayStart + DUBAI_TIMEZONE_OFFSET;
-
-        // Calculate next 17:00 Dubai time
-        uint256 nextStart = dubaiTime + AUCTION_START_HOUR * 1 hours;
-        if (nextStart <= currentTime) {
-            nextStart += 1 days;
-        }
-
-        // Adjust for 50-day interval
         uint256 timeSinceFirst = currentTime - cycle.firstAuctionStart;
         uint256 currentCycle = timeSinceFirst / AUCTION_INTERVAL;
+
+        // Calculate next auction start (every 50 days at 15:00 IST)
         uint256 nextCycleStart = cycle.firstAuctionStart +
             (currentCycle + 1) *
             AUCTION_INTERVAL;
 
-        // Ensure it aligns with 17:00 Dubai time
-        if (nextCycleStart > nextStart) {
-            nextStart =
-                nextCycleStart -
-                (nextCycleStart % 1 days) +
-                DUBAI_TIMEZONE_OFFSET +
-                AUCTION_START_HOUR *
-                1 hours;
-            if (nextStart < nextCycleStart) {
-                nextStart += 1 days;
-            }
+        // Align to 15:00 IST
+        uint256 dayStart = (nextCycleStart / 86400) * 86400; // Start of the day
+        uint256 localDayStart = dayStart + TIMEZONE_OFFSET; // Adjust to IST (GMT+5:30)
+        uint256 alignedStart = localDayStart + (15 * 3600); // Set to 15:00 IST
+
+        // If alignedStart is in the past, move to next day
+        if (alignedStart <= currentTime) {
+            alignedStart += 86400;
         }
 
-        return nextStart;
+        return alignedStart;
     }
+
     function swapTokens(address user, address inputToken) public nonReentrant {
         require(supportedTokens[inputToken], "Unsupported token");
         require(stateToken != address(0), "State token cannot be null");
@@ -295,6 +282,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         emit TokensSwapped(user, tokenIn, tokenOut, amountIn, amountOut);
     }
+
     function setInAmountPercentage(uint256 amount) public onlyGovernance {
         require(amount <= 100, "Percentage exceeds safe limit");
         percentage = amount;
@@ -333,7 +321,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         uint256 fullCycleLength = AUCTION_DURATION + AUCTION_INTERVAL;
         uint256 currentCyclePosition = timeSinceStart % fullCycleLength;
 
-        // Increment auction count if we're in a new cycle
         if (
             currentCyclePosition < AUCTION_DURATION &&
             cycleNumber < MAX_AUCTIONS
@@ -343,6 +330,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         return false;
     }
+
     function isReverseAuctionActive(
         address inputToken
     ) public view returns (bool) {
