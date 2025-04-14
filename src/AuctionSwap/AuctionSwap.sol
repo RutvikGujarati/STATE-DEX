@@ -129,7 +129,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         uint256 currentTime = block.timestamp;
         uint256 currentDayStart = (currentTime / 86400) * 86400; // Start of current day in UTC
         uint256 localDayStart = currentDayStart + TIMEZONE_OFFSET; // Adjust to IST (GMT+5:30)
-        uint256 auctionStart = localDayStart + (7.5 * 3600); // Set to 18:30 IST (18.5 hours)
+        uint256 auctionStart = localDayStart + (9.1 * 3600); // Set to 18:30 IST (18.5 hours)
 
         // If current time is past 18:30 IST, schedule for next day
         if (currentTime >= auctionStart) {
@@ -176,6 +176,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         return ratio;
     }
+
     /**
      * @dev Calculate the base reward for a given DAV amount.
      */
@@ -284,7 +285,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         // Align to 18:30 IST
         uint256 dayStart = (nextCycleStart / 86400) * 86400; // Start of the day
         uint256 localDayStart = dayStart + TIMEZONE_OFFSET; // Adjust to IST (GMT+5:30)
-        uint256 alignedStart = localDayStart + (7.5 * 3600); // Set to 18:30 IST
+        uint256 alignedStart = localDayStart + (8.5 * 3600); // Set to 18:30 IST
 
         // If alignedStart is in the past, move to next day
         if (alignedStart <= currentTime) {
@@ -463,6 +464,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         address inputToken
     ) public view returns (uint256) {
         require(supportedTokens[inputToken], "Unsupported token");
+
         uint256 currentCycle = getCurrentAuctionCycle(inputToken);
         AuctionCycle memory cycle = auctionCycles[inputToken][stateToken];
         if (
@@ -472,18 +474,24 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         }
 
         uint256 davbalance = dav.balanceOf(msg.sender);
-        bool isReverse = isReverseAuctionActive(inputToken);
         if (davbalance == 0) {
             return 0;
         }
 
-        uint256 firstCal = (maxSupplies[inputToken] * percentage) / 100 ether;
-        uint256 secondCalWithDavMax = (firstCal / 5000000) * davbalance;
+        bool isReverse = isReverseAuctionActive(inputToken);
+
+        // Adjust calculation to avoid truncation
+        uint256 precisionFactor = 1e18; // Match typical ERC20 decimals
+        uint256 firstCal = (maxSupplies[inputToken] *
+            percentage *
+            precisionFactor) / 100;
+        uint256 secondCalWithDavMax = (firstCal / (5000000 * 1e18)) *
+            davbalance;
         uint256 baseAmount = isReverse
             ? secondCalWithDavMax * 2
             : secondCalWithDavMax;
 
-        return baseAmount;
+        return baseAmount / precisionFactor; // Scale back to correct units
     }
 
     function getSwapAmounts(
@@ -498,9 +506,9 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
     function getOutPutAmount(address inputToken) public view returns (uint256) {
         require(supportedTokens[inputToken], "Unsupported token");
-        uint256 currentRatio = getRatioPrice(inputToken);
+        uint256 currentRatio = 1000;
         require(currentRatio > 0, "Invalid ratio");
-        uint256 currentRatioNormalized = currentRatio / 1e18;
+        uint256 currentRatioNormalized = 1000;
 
         uint256 userBalance = dav.balanceOf(msg.sender);
         if (userBalance == 0) {
