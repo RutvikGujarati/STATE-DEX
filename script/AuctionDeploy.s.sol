@@ -5,23 +5,16 @@ import "forge-std/Script.sol";
 import {Ratio_Swapping_Auctions_V2_1} from "../src/AuctionSwap/AuctionSwap.sol";
 contract AuctionSwapDeploy is Script {
     function run() external {
-        address davToken = 0x78f8Aba822259d8B5E4E381bc536816874Aa5D86;
-        address StatToken = 0xc359f56c63A8117C83AbE84F4BB78d9eF124b567;
-        address Teeah = 0x3288DCdcc0c8Fea3Cc84D463352d1DB7B22FCf1c;
-        address governance = 0xB511110f312a4C6C4a240b2fE94de55D600Df7a9;
-
-        address pairAddress = 0xebeE32fAe4fCB913fA25aE16D741BA197510a575;
+        address governance = 0x3Bdbb84B90aBAf52814aAB54B9622408F2dCA483;
 
         vm.startBroadcast();
 
         Ratio_Swapping_Auctions_V2_1 swap = new Ratio_Swapping_Auctions_V2_1(
-            StatToken,
-            davToken,
-            Teeah,
-            governance,
-            pairAddress
+            governance
         );
         console.log("Swap deployed at:", address(swap));
         vm.stopBroadcast();
     }
 }
+
+//0x59589F149e9022f58E446d4A20a014c42541cA31

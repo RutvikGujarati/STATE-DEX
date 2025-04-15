@@ -15,28 +15,40 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     uint256 public constant REFERRAL_BONUS = 5; // 5% bonus for referrers
     uint256 public constant LIQUIDITY_SHARE = 20; // 20% LIQUIDITY SHARE
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE
-    uint256 public constant STATELP_SHARE = 60; // 5% DEV SHARE
+    uint256 public constant HOLDER_SHARE = 10; // 10% HOLDER SHARE
+    uint256 public constant STATELP_SHARE = 60; // 60% STATE LP SHARE (used if referral applied)
+    // Add this to track total distributed rewards for accounting
+    uint256 public totalReferralRewardsDistributed;
+    uint256 public unallocatedHolderDust; // Unused fractional dust from reward calc
 
     uint256 public mintedSupply; // Total Minted DAV Tokens
-    /* liquidity and development wallets*/
     address public liquidityWallet;
     address public developmentWallet;
     address public StateLP;
-    /* liquidity and development funds stroing*/
     uint256 public liquidityFunds;
     uint256 public developmentFunds;
+    uint256 public holderFunds; // Tracks ETH allocated for holder rewards
 
     uint256 public deployTime;
     uint256 public constant davIncrement = 1;
-    /* liquidity and development wallets withdrawal amount*/
     uint256 public totalLiquidityAllocated;
     uint256 public totalDevelopmentAllocated;
-    //it is used in other token contracts
     uint256 public davHoldersCount;
     uint256 public totalRewardPerTokenStored;
-    // follows for do not allow dav token transafers
     bool public transfersPaused = true;
     string public TransactionHash;
+
+    mapping(address => string) public userReferralCode; // User's own referral code
+    mapping(string => address) public referralCodeToUser; // Referral code to user address
+    mapping(address => string) public userToReferralCodeUsed; // Tracks which code a user used
+    mapping(address => uint256) public referralRewards; // Tracks referral rewards earned
+
+    mapping(address => uint256) public lastMintTimestamp;
+    mapping(address => bool) private isDAVHolder;
+    mapping(address => uint256) public holderRewards;
+    mapping(address => uint256) public userRewardPerTokenPaid;
+    mapping(address => uint256) public userMintedAmount;
+
     event TokensMinted(
         address indexed user,
         uint256 davAmount,
@@ -48,28 +60,23 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     event ReferralBonusPaid(
         address indexed referrer,
         address indexed referee,
+        string referralCode,
         uint256 amount
     );
-
-    /* lastMingTimestamp will use in tokens for getting users mint time */
-    mapping(address => uint256) public lastMintTimestamp;
-    mapping(address => bool) private isDAVHolder;
-    mapping(address => uint256) public holderRewards;
-    mapping(address => uint256) public userRewardPerTokenPaid;
-    mapping(address => uint256) public userMintedAmount;
-
-    mapping(address => address) public referrers; // Tracks who referred each user
-    mapping(address => uint256) public referralRewards; // Tracks referral rewards earned
+    event ReferralCodeGenerated(address indexed user, string referralCode);
+    event StuckETHWithdrawn(address indexed owner, uint256 amount);
 
     constructor(
         address _liquidityWallet,
         address _developmentWallet,
         address _stateLP,
         string memory tokenName,
-        string memory TokenSymbol
-    ) ERC20(tokenName, TokenSymbol) {
+        string memory tokenSymbol
+    ) ERC20(tokenName, tokenSymbol) {
         require(
-            _liquidityWallet != address(0) && _developmentWallet != address(0),
+            _liquidityWallet != address(0) &&
+                _developmentWallet != address(0) &&
+                _stateLP != address(0),
             "Wallet addresses cannot be zero"
         );
         liquidityWallet = _liquidityWallet;
@@ -79,25 +86,18 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         deployTime = block.timestamp;
     }
 
-    /**
-	 @notice Transfer not allowing of Dav tokens logic
-	* @dev Ensures that user can not transfer DAV tokens to other wallet or somewhere else.
-	**/
     modifier whenTransfersAllowed() {
         require(!transfersPaused, "Transfers are currently paused");
         _;
     }
 
-    //Transferring DAV tokens is not allowed after minting
-    /**
-     * @dev Prevent approvals to block indirect transfers via allowance
-     */
     function approve(
         address spender,
         uint256 amount
     ) public override whenTransfersAllowed returns (bool) {
         return super.approve(spender, amount);
     }
+
     function transfer(
         address recipient,
         uint256 amount
@@ -132,14 +132,76 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             holderRewards[account];
     }
 
-    /**
-     * @notice Allows users to mint DAV tokens by sending PLS.
-     * @dev Ensures whole-number minting, checks supply limits, and distributes funds accordingly.
-     * @param amount The number of DAV tokens to mint (must be in whole numbers of 1 DAV = 1 ether).
-     */
+    function _generateReferralCode(
+        address user
+    ) internal view returns (string memory) {
+        bytes32 hash = keccak256(
+            abi.encodePacked(user, block.timestamp, block.number)
+        );
+        return toHexString(uint256(hash), 8);
+    }
+
+    function toHexString(
+        uint256 value,
+        uint256 length
+    ) internal pure returns (string memory) {
+        bytes memory buffer = new bytes(2 * length);
+        bytes memory alphabet = "0123456789abcdef";
+        for (uint256 i = 2 * length; i > 0; i--) {
+            buffer[i - 1] = alphabet[value & 0xf];
+            value >>= 4;
+        }
+        return string(buffer);
+    }
+
+    function _calculateETHDistribution(
+        uint256 value,
+        address sender,
+        string memory referralCode
+    )
+        internal
+        view
+        returns (
+            uint256 holderShare,
+            uint256 liquidityShare,
+            uint256 developmentShare,
+            uint256 referralShare,
+            uint256 stateLPShare,
+            address referrer
+        )
+    {
+        holderShare = (value * HOLDER_SHARE) / 100;
+        liquidityShare = (value * LIQUIDITY_SHARE) / 100;
+        developmentShare = (value * DEVELOPMENT_SHARE) / 100;
+
+        referralShare = 0;
+        referrer = address(0);
+
+        if (bytes(referralCode).length > 0) {
+            address _referrer = referralCodeToUser[referralCode];
+            if (_referrer != address(0) && _referrer != sender) {
+                referralShare = (value * REFERRAL_BONUS) / 100;
+                referrer = _referrer;
+            }
+        }
+
+        if (davHoldersCount == 0 || totalSupply() == 0) {
+            liquidityShare += holderShare;
+            holderShare = 0;
+        }
+
+        uint256 distributed = holderShare +
+            liquidityShare +
+            developmentShare +
+            referralShare;
+        require(distributed <= value, "Over-allocation");
+
+        stateLPShare = value - distributed;
+    }
+
     function mintDAV(
         uint256 amount,
-        address referrer
+        string memory referralCode
     ) external payable nonReentrant {
         require(amount > 0, "Amount must be greater than zero");
         require(amount % 1 ether == 0, "Amount must be a whole number");
@@ -151,73 +213,80 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         mintedSupply += amount;
         lastMintTimestamp[msg.sender] = block.timestamp;
 
-        uint256 holderShare = 0;
-        if (davHoldersCount > 0 && totalSupply() > 0) {
-            holderShare = (msg.value * 10) / 100;
-            totalRewardPerTokenStored += (holderShare * 1e18) / totalSupply();
+        if (bytes(userReferralCode[msg.sender]).length == 0) {
+            string memory newReferralCode = _generateReferralCode(msg.sender);
+            userReferralCode[msg.sender] = newReferralCode;
+            referralCodeToUser[newReferralCode] = msg.sender;
+            emit ReferralCodeGenerated(msg.sender, newReferralCode);
         }
 
-        // Remove holderShare from remaining funds
-        uint256 remainingFunds = msg.value - holderShare;
+        (
+            uint256 holderShare,
+            uint256 liquidityShare,
+            uint256 developmentShare,
+            uint256 referralShare,
+            uint256 stateLPShare,
+            address referrer
+        ) = _calculateETHDistribution(msg.value, msg.sender, referralCode);
 
-        // Breakdown of remaining 90% funds
-        uint256 liquidityShare = (remainingFunds * LIQUIDITY_SHARE) / 100; // 20%
-        uint256 developmentShare = (remainingFunds * DEVELOPMENT_SHARE) / 100; // 5%
-        uint256 referralShare = 0;
-        uint256 stateLPShare;
+        // Distribute rewards to holders
+        if (holderShare > 0 && totalSupply() > 0) {
+            uint256 rewardPerToken = (holderShare * 1e18) / totalSupply();
+            uint256 usedHolderShare = (rewardPerToken * totalSupply()) / 1e18;
+            uint256 residualDust = holderShare - usedHolderShare;
 
-        // Handle referral bonus (5%)
-        if (
-            referrer != address(0) &&
-            referrer != msg.sender &&
-            referrers[msg.sender] == address(0)
-        ) {
-            referrers[msg.sender] = referrer;
-            referralShare = (remainingFunds * REFERRAL_BONUS) / 100;
+            holderFunds += usedHolderShare;
+            unallocatedHolderDust += residualDust;
+            totalRewardPerTokenStored += rewardPerToken;
+        }
 
+        // Send referral bonus
+        if (referrer != address(0) && referralShare > 0) {
             referralRewards[referrer] += referralShare;
+            totalReferralRewardsDistributed += referralShare;
 
             (bool successRef, ) = referrer.call{value: referralShare}("");
             require(successRef, "Referral transfer failed");
-            emit ReferralBonusPaid(referrer, msg.sender, referralShare);
+
+            emit ReferralBonusPaid(
+                referrer,
+                msg.sender,
+                referralCode,
+                referralShare
+            );
         }
 
-        // Remaining goes to State LP (60% if referral used, else 65%)
-        uint256 distributedSoFar = liquidityShare +
-            developmentShare +
-            referralShare;
-        stateLPShare = remainingFunds - distributedSoFar;
+        // Transfer to liquidity wallet
+        if (liquidityShare > 0) {
+            (bool successLiquidity, ) = liquidityWallet.call{
+                value: liquidityShare
+            }("");
+            require(successLiquidity, "Liquidity transfer failed");
+            totalLiquidityAllocated += liquidityShare;
+            emit FundsWithdrawn("Liquidity", liquidityShare, block.timestamp);
+        }
 
-        require(
-            liquidityShare +
-                developmentShare +
-                referralShare +
-                stateLPShare +
-                holderShare ==
-                msg.value,
-            "Distribution mismatch"
-        );
+        // Transfer to development wallet
+        if (developmentShare > 0) {
+            (bool successDev, ) = developmentWallet.call{
+                value: developmentShare
+            }("");
+            require(successDev, "Development transfer failed");
+            totalDevelopmentAllocated += developmentShare;
+            emit FundsWithdrawn(
+                "Development",
+                developmentShare,
+                block.timestamp
+            );
+        }
 
-        // Transfer to wallets
-        (bool successLiquidity, ) = liquidityWallet.call{value: liquidityShare}(
-            ""
-        );
-        require(successLiquidity, "Liquidity transfer failed");
-        totalLiquidityAllocated += liquidityShare;
-        emit FundsWithdrawn("Liquidity", liquidityShare, block.timestamp);
+        // Transfer to State LP
+        if (stateLPShare > 0) {
+            (bool successState, ) = StateLP.call{value: stateLPShare}("");
+            require(successState, "State LP transfer failed");
+            emit FundsWithdrawn("StateLP", stateLPShare, block.timestamp);
+        }
 
-        (bool successDev, ) = developmentWallet.call{value: developmentShare}(
-            ""
-        );
-        require(successDev, "Development transfer failed");
-        totalDevelopmentAllocated += developmentShare;
-        emit FundsWithdrawn("Development", developmentShare, block.timestamp);
-
-        (bool successState, ) = StateLP.call{value: stateLPShare}("");
-        require(successState, "State LP transfer failed");
-        emit FundsWithdrawn("StateLP", stateLPShare, block.timestamp);
-
-        // Update state
         userMintedAmount[msg.sender] += amount;
         if (!isDAVHolder[msg.sender]) {
             isDAVHolder[msg.sender] = true;
@@ -225,25 +294,36 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             emit HolderAdded(msg.sender);
         }
 
-        _updateRewards(msg.sender); // Before minting
+        _updateRewards(msg.sender);
         _mint(msg.sender, amount);
-        _updateRewards(msg.sender); // After minting
+        _updateRewards(msg.sender);
 
         emit TokensMinted(msg.sender, amount, msg.value);
     }
 
-    /**
-     * @notice Allows users to claim their 10% of native currency (PLS).
-     */
-    function claimRewards() external nonReentrant {
+    function claimReward() external nonReentrant {
+        require(balanceOf(msg.sender) > 0, "Not a DAV holder");
+
         _updateRewards(msg.sender);
+
         uint256 reward = holderRewards[msg.sender];
         require(reward > 0, "No rewards to claim");
 
         holderRewards[msg.sender] = 0;
+        holderFunds -= reward;
+
         (bool success, ) = msg.sender.call{value: reward}("");
-        require(success, "Transfer failed");
-        emit RewardsClaimed(msg.sender, reward);
+        require(success, "Reward transfer failed");
+        // ✅ If all holder rewards are claimed, send any remaining ETH to StateLP
+        if (holderFunds == 0 && address(this).balance > 0) {
+            uint256 remaining = address(this).balance;
+            (bool successSweep, ) = StateLP.call{value: remaining}("");
+            require(successSweep, "Sweep to StateLP failed");
+            emit FundsWithdrawn("StateLP - Sweep", remaining, block.timestamp);
+
+            // Optional: clear unallocated dust tracking
+            unallocatedHolderDust = 0;
+        }
     }
 
     function getDAVHoldersCount() external view returns (uint256) {
@@ -266,7 +346,23 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         if (totalSupply == 0) {
             return 0;
         }
-        return (userBalance * 1e18) / totalSupply; // Return percentage as a scaled value (1e18 = 100%).
+        return (userBalance * 1e18) / totalSupply;
+    }
+
+    function getUserReferralCode(
+        address user
+    ) external view returns (string memory) {
+        return userReferralCode[user];
+    }
+
+    function isValidReferralCode(
+        string memory referralCode
+    ) external view returns (bool) {
+        return referralCodeToUser[referralCode] != address(0);
+    }
+
+    function getHolderFunds() external view returns (uint256) {
+        return holderFunds;
     }
 
     receive() external payable {

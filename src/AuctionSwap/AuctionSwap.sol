@@ -104,10 +104,10 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
     function setTokenAddress(
         address state,
-        address dav
+        address _dav
     ) external onlyGovernance {
-        require(dav != address(0), "Invalid dav address");
-        dav = IERC20(payable(dav));
+        require(_dav != address(0), "Invalid dav address");
+        dav = IERC20(payable(_dav));
         stateToken = state;
     }
 
