@@ -30,10 +30,10 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     mapping(address => uint256) public cumulativeMintableHoldings;
     mapping(address => uint256) public cumulativeDavHoldings;
     uint256 public totalAirdropMinted;
-    uint256 public constant AUCTION_INTERVAL = 50 days;
-    uint256 public constant REVERSE_AUCTION_INTERVAL = 200 days;
-    uint256 public constant AUCTION_DURATION = 24 hours;
-    uint256 public constant REVERSE_DURATION = 24 hours;
+    uint256 public constant AUCTION_INTERVAL = 1 hours;
+    uint256 public constant REVERSE_AUCTION_INTERVAL = 5 hours;
+    uint256 public constant AUCTION_DURATION = 1 hours;
+    uint256 public constant REVERSE_DURATION = 1 hours;
     uint256 public constant MAX_AUCTIONS = 56;
     uint256 public constant TIMEZONE_OFFSET = 19800; // GMT+5:30 in seconds (5.5 hours * 3600)
     uint256 public percentage = 1;
@@ -104,10 +104,10 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
     function setTokenAddress(
         address state,
-        address token
+        address dav
     ) external onlyGovernance {
-        require(token != address(0), "Invalid token address");
-        dav = IERC20(payable(token));
+        require(dav != address(0), "Invalid dav address");
+        dav = IERC20(payable(dav));
         stateToken = state;
     }
 

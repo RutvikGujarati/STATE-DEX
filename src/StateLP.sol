@@ -40,13 +40,11 @@ contract StateLP {
 
     constructor(
         address _state,
-        address _dav,
         address _wpls,
         address _pairAddress,
         address _governance
     ) {
         stateToken = IERC20(_state);
-        davToken = IERC20(_dav);
         stateAddress = _state;
         Wpls = _wpls;
         Governance = _governance;
@@ -66,17 +64,24 @@ contract StateLP {
 
         require(reserve0 > 0 && reserve1 > 0, "Invalid reserves");
 
+        uint256 ratio;
         if (token0 == Wpls && token1 == stateAddress) {
-            return (uint256(reserve1) * 1e18) / uint256(reserve0);
+            ratio = (uint256(reserve1) * 1e18) / uint256(reserve0);
         } else if (token0 == stateAddress && token1 == Wpls) {
-            return (uint256(reserve0) * 1e18) / uint256(reserve1);
+            ratio = (uint256(reserve0) * 1e18) / uint256(reserve1);
         } else {
-            revert("Invalid pair, must be WPLS/STATE");
+            revert("Invalid pair");
         }
+
+        return ratio;
     }
 
     function depositPLS() external payable onlyGovernance {
         require(msg.value > 0, "Must send PLS");
+    }
+
+    function addDavToken(address _dav) public onlyGovernance {
+        davToken = IERC20(payable(_dav));
     }
 
     function burnState(uint256 amount) external {
@@ -111,7 +116,7 @@ contract StateLP {
         require(burnInfo.amount > 0, "No STATE burned");
         require(!burnInfo.claimed, "Already claimed");
 
-        uint256 statePrice = getRatioPrice();
+        uint256 statePrice = 100;
         uint256 value = (burnInfo.amount * statePrice * 2) / 1e18;
 
         require(address(this).balance >= value, "Not enough PLS in contract");
@@ -134,13 +139,9 @@ contract StateLP {
             block.timestamp >= burn.timestamp + CLAIM_INTERVAL);
     }
 
-    receive() external payable {
-        require(msg.sender == Governance, "Only Governance can fund");
-    }
+    receive() external payable {}
 
-    fallback() external payable {
-        require(msg.sender == Governance, "Only Governance can fund");
-    }
+    fallback() external payable {}
 
     function getContractPLSBalance() external view returns (uint256) {
         return address(this).balance;
