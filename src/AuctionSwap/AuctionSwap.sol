@@ -178,35 +178,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     }
 
     /**
-     * @dev Calculate the base reward for a given DAV amount.
-     */
-    function calculateBaseReward(
-        uint256 davAmount,
-        address inputToken
-    ) public view returns (uint256) {
-        require(supportedTokens[inputToken], "Unsupported token");
-        uint256 supply_p = maxSupplies[inputToken] * 10; // 10x max supply for scaling
-        uint256 denominator = 5e9; // Equivalent to 5000000 * 1000
-        uint256 precisionFactor = 1e18; // Scaling factor for precision
-
-        uint256 baseReward;
-
-        if (davAmount > type(uint256).max / supply_p) {
-            // Avoid overflow by scaling first
-            baseReward =
-                ((davAmount * precisionFactor) / denominator) *
-                (supply_p / precisionFactor);
-        } else {
-            // Normal calculation with precision
-            baseReward =
-                (davAmount * supply_p) /
-                (denominator * precisionFactor);
-        }
-
-        return baseReward;
-    }
-
-    /**
      * @dev Distribute reward for a user's DAV holdings.
      */
     function distributeReward(
@@ -225,74 +196,14 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         require(newDavContributed > 0, "No new DAV holdings");
 
         // **Effects**
-        uint256 baseReward = calculateBaseReward(newDavContributed, inputToken);
-        userBaseReward[user] += baseReward; // Accumulate reward
+        uint256 reward = (newDavContributed * 10000) / 1e18;
+
         cumulativeDavHoldings[user] += newDavContributed;
         lastDavHolding[user] = currentDavHolding;
 
-        emit RewardDistributed(user, baseReward);
-    }
-
-    /**
-     * @dev Claim accumulated reward in inputToken.
-     */
-    function mintReward(address inputToken) external nonReentrant {
-        // **Checks**
-        require(supportedTokens[inputToken], "Unsupported token");
-        uint256 reward = userBaseReward[msg.sender];
-        require(reward > 0, "No reward to claim");
-        require(cumulativeDavHoldings[msg.sender] > 0, "No recorded holdings");
-
-        // Check contract's balance of inputToken
-        require(
-            IERC20(inputToken).balanceOf(address(this)) >= reward,
-            "Insufficient token balance in contract"
-        );
-
-        // Cap reward at 10% of maxSupplies[inputToken]
-        require(
-            totalRewardDistributed + reward <=
-                (maxSupplies[inputToken] * 10) / 100,
-            "Reward cap exceeded"
-        );
-
-        // **Effects**
-        userBaseReward[msg.sender] = 0;
-        cumulativeDavHoldings[msg.sender] = 0; // Reset after claiming
-        totalRewardDistributed += reward;
-
-        // **Interactions**
         IERC20(inputToken).safeTransfer(msg.sender, reward);
-    }
 
-    function getNextAuctionStartTime(
-        address inputToken
-    ) public view returns (uint256) {
-        AuctionCycle memory cycle = auctionCycles[inputToken][stateToken];
-        if (!cycle.isInitialized || cycle.auctionCount >= MAX_AUCTIONS) {
-            return 0;
-        }
-
-        uint256 currentTime = block.timestamp;
-        uint256 timeSinceFirst = currentTime - cycle.firstAuctionStart;
-        uint256 currentCycle = timeSinceFirst / AUCTION_INTERVAL;
-
-        // Calculate next auction start (every 50 days at 18:30 IST)
-        uint256 nextCycleStart = cycle.firstAuctionStart +
-            (currentCycle + 1) *
-            AUCTION_INTERVAL;
-
-        // Align to 18:30 IST
-        uint256 dayStart = (nextCycleStart / 86400) * 86400; // Start of the day
-        uint256 localDayStart = dayStart + TIMEZONE_OFFSET; // Adjust to IST (GMT+5:30)
-        uint256 alignedStart = localDayStart + (8.5 * 3600); // Set to 18:30 IST
-
-        // If alignedStart is in the past, move to next day
-        if (alignedStart <= currentTime) {
-            alignedStart += 86400;
-        }
-
-        return alignedStart;
+        emit RewardDistributed(user, reward);
     }
 
     function swapTokens(address user, address inputToken) public nonReentrant {
@@ -378,11 +289,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         }
 
         emit TokensSwapped(user, tokenIn, tokenOut, amountIn, amountOut);
-    }
-
-    function setInAmountPercentage(uint256 amount) public onlyGovernance {
-        require(amount <= 100, "Percentage exceeds safe limit");
-        percentage = amount;
     }
 
     function getUserHasSwapped(
@@ -494,16 +400,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         return baseAmount / precisionFactor; // Scale back to correct units
     }
 
-    function getSwapAmounts(
-        uint256 _amountIn,
-        uint256 _amountOut
-    ) public pure returns (uint256 newAmountIn, uint256 newAmountOut) {
-        uint256 tempAmountOut = _amountIn;
-        newAmountIn = _amountOut;
-        newAmountOut = tempAmountOut;
-        return (newAmountIn, newAmountOut);
-    }
-
     function getOutPutAmount(address inputToken) public view returns (uint256) {
         require(supportedTokens[inputToken], "Unsupported token");
         uint256 currentRatio = 1000;
@@ -550,24 +446,5 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
     function getTotalTokensBurned() public view returns (uint256) {
         return TotalTokensBurned;
-    }
-
-    function getTimeLeftInAuction(
-        address inputToken
-    ) public view returns (uint256) {
-        if (!isAuctionActive(inputToken)) {
-            return 0;
-        }
-
-        AuctionCycle storage cycle = auctionCycles[inputToken][stateToken];
-        uint256 currentTime = block.timestamp;
-        uint256 timeSinceStart = currentTime - cycle.firstAuctionStart;
-        uint256 currentCyclePosition = timeSinceStart % AUCTION_INTERVAL;
-
-        if (currentCyclePosition < AUCTION_DURATION) {
-            return AUCTION_DURATION - currentCyclePosition;
-        }
-
-        return 0;
     }
 }
