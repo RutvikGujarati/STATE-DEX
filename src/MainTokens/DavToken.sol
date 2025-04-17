@@ -11,7 +11,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     ReentrancyGuard
 {
     uint256 public constant MAX_SUPPLY = 5000000 ether; // 5 Million DAV Tokens
-    uint256 public constant TOKEN_COST = 500000 ether;
+    uint256 public constant TOKEN_COST = 1000000 ether; // 500000 org
     uint256 public constant REFERRAL_BONUS = 5; // 5% bonus for referrers
     uint256 public constant LIQUIDITY_SHARE = 20; // 20% LIQUIDITY SHARE
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE

@@ -11,6 +11,7 @@ interface IPair {
         returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
 
     function token0() external view returns (address);
+
     function token1() external view returns (address);
 }
 
@@ -26,14 +27,14 @@ contract StateLP {
     address public stateAddress;
     address private constant BURN_ADDRESS =
         0x0000000000000000000000000000000000000369;
-    uint256 public constant MIN_DAV = 50 * 1e18;
+    uint256 public constant MIN_DAV = 25 * 1e18;
     uint256 public constant MIN_BURN = 1000000000 * 1e18;
     uint256 public constant CLAIM_INTERVAL = 30 days;
 
     struct BurnInfo {
-        uint256 amount;
-        uint256 timestamp;
-        bool claimed;
+        uint256 totalBurned;
+        bool hasClaimed;
+        uint256 lastClaimed;
     }
 
     mapping(address => BurnInfo) public userBurns;
@@ -86,7 +87,7 @@ contract StateLP {
 
     function burnState(uint256 amount) external {
         require(
-            davToken.balanceOf(msg.sender) > MIN_DAV,
+            davToken.balanceOf(msg.sender) >= MIN_DAV,
             "You need more than 50 DAV"
         );
         require(
@@ -94,49 +95,43 @@ contract StateLP {
             "Amount must be in 1B STATE increments"
         );
 
+        stateToken.safeTransferFrom(msg.sender, BURN_ADDRESS, amount);
+
         BurnInfo storage burnInfo = userBurns[msg.sender];
-        require(
-            block.timestamp >= burnInfo.timestamp + CLAIM_INTERVAL ||
-                burnInfo.timestamp == 0,
-            "Must wait 30 days between burns"
-        );
-
-        stateToken.safeTransfer(BURN_ADDRESS, amount);
-
-        userBurns[msg.sender] = BurnInfo({
-            amount: amount,
-            timestamp: block.timestamp,
-            claimed: false
-        });
+        burnInfo.totalBurned += amount;
     }
 
-    function claimPLS() external {
+    function claimPLS(uint256 _stateWplsRatio) external {
         BurnInfo storage burnInfo = userBurns[msg.sender];
 
-        require(burnInfo.amount > 0, "No STATE burned");
-        require(!burnInfo.claimed, "Already claimed");
+        require(burnInfo.totalBurned > 0, "No STATE burned");
+        require(
+            block.timestamp >= burnInfo.lastClaimed + CLAIM_INTERVAL,
+            "Claim interval not yet passed"
+        );
 
-        uint256 statePrice = 100;
-        uint256 value = (burnInfo.amount * statePrice * 2) / 1e18;
+        uint256 value = (burnInfo.totalBurned * _stateWplsRatio * 2) / 1e18;
 
         require(address(this).balance >= value, "Not enough PLS in contract");
 
-        burnInfo.claimed = true;
+        burnInfo.lastClaimed = block.timestamp;
+        burnInfo.hasClaimed = true;
+
+        burnInfo.totalBurned = 0; // Reset burn amount after claim
 
         (bool success, ) = payable(msg.sender).call{value: value}("");
         require(success, "PLS transfer failed");
     }
 
-    function nextBurnDate(address user) external view returns (uint256) {
+    function nextClaimDate(address user) external view returns (uint256) {
         BurnInfo memory burn = userBurns[user];
-        if (burn.timestamp == 0) return 0;
-        return burn.timestamp + CLAIM_INTERVAL;
+        if (burn.lastClaimed == 0) return 0;
+        return burn.lastClaimed + CLAIM_INTERVAL;
     }
 
-    function canBurnNow(address user) external view returns (bool) {
+    function canClaimNow(address user) external view returns (bool) {
         BurnInfo memory burn = userBurns[user];
-        return (burn.timestamp == 0 ||
-            block.timestamp >= burn.timestamp + CLAIM_INTERVAL);
+        return block.timestamp >= burn.lastClaimed + CLAIM_INTERVAL;
     }
 
     receive() external payable {}

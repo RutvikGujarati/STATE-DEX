@@ -31,10 +31,10 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     mapping(address => uint256) public cumulativeDavHoldings;
     uint256 public totalAirdropMinted;
     uint256 public constant AUCTION_INTERVAL = 1 hours;
-    uint256 public constant REVERSE_AUCTION_INTERVAL = 5 hours;
     uint256 public constant AUCTION_DURATION = 1 hours;
     uint256 public constant REVERSE_DURATION = 1 hours;
     uint256 public constant MAX_AUCTIONS = 56;
+    uint256 public constant MAX_SUPPLY = 500000000000 ether;
     uint256 public constant TIMEZONE_OFFSET = 19800; // GMT+5:30 in seconds (5.5 hours * 3600)
     uint256 public percentage = 1;
     address private constant BURN_ADDRESS =
@@ -44,7 +44,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     address public governanceAddress;
     mapping(address => address) public pairAddresses; // token => pair address
     mapping(address => bool) public supportedTokens; // token => isSupported
-    mapping(address => uint256) public maxSupplies; // token => maxSupply
 
     modifier onlyGovernance() {
         require(
@@ -92,11 +91,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         uint256 amountIn,
         uint256 amountOut
     );
-    event TokenAdded(
-        address indexed token,
-        uint256 maxSupply,
-        address pairAddress
-    );
+    event TokenAdded(address indexed token, address pairAddress);
 
     constructor(address _gov) {
         governanceAddress = _gov;
@@ -113,28 +108,17 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
     function addToken(
         address token,
-        uint256 maxSupply,
         address pairAddress
     ) external onlyGovernance {
         require(token != address(0), "Invalid token address");
-        require(maxSupply > 0, "Invalid max supply");
         require(pairAddress != address(0), "Invalid pair address");
         require(!supportedTokens[token], "Token already added");
 
         supportedTokens[token] = true;
-        maxSupplies[token] = maxSupply;
         pairAddresses[token] = pairAddress;
 
         // Schedule first auction at 18:30 IST (GMT+5:30)
-        uint256 currentTime = block.timestamp;
-        uint256 currentDayStart = (currentTime / 86400) * 86400; // Start of current day in UTC
-        uint256 localDayStart = currentDayStart + TIMEZONE_OFFSET; // Adjust to IST (GMT+5:30)
-        uint256 auctionStart = localDayStart + (9.1 * 3600); // Set to 18:30 IST (18.5 hours)
-
-        // If current time is past 18:30 IST, schedule for next day
-        if (currentTime >= auctionStart) {
-            auctionStart += 86400; // Add 1 day
-        }
+        uint256 auctionStart = block.timestamp;
 
         AuctionCycle storage cycle = auctionCycles[token][stateToken];
         cycle.firstAuctionStart = auctionStart;
@@ -147,7 +131,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
             auctionCount: 0
         });
 
-        emit TokenAdded(token, maxSupply, pairAddress);
+        emit TokenAdded(token, pairAddress);
         emit AuctionStarted(
             auctionStart,
             auctionStart + AUCTION_DURATION,
@@ -388,9 +372,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         // Adjust calculation to avoid truncation
         uint256 precisionFactor = 1e18; // Match typical ERC20 decimals
-        uint256 firstCal = (maxSupplies[inputToken] *
-            percentage *
-            precisionFactor) / 100;
+        uint256 firstCal = (MAX_SUPPLY * percentage * precisionFactor) / 100;
         uint256 secondCalWithDavMax = (firstCal / (5000000 * 1e18)) *
             davbalance;
         uint256 baseAmount = isReverse

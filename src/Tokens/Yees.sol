@@ -11,16 +11,16 @@ contract Yees is ERC20, Ownable(msg.sender) {
         string memory name,
         string memory symbol,
         address _five,
-        address _stateLp
+        address _swap
     ) ERC20(name, symbol) {
         require(
-            _five != address(0) && _stateLp != address(0),
+            _five != address(0) && _swap != address(0),
             "Invalid address"
         );
 
         uint256 Five_percent = (MAX_SUPPLY * 5) / 100;
         uint256 ninetyFivePercent = MAX_SUPPLY - Five_percent;
         _mint(_five, Five_percent);
-        _mint(_stateLp, ninetyFivePercent);
+        _mint(_swap, ninetyFivePercent);
     }
 }

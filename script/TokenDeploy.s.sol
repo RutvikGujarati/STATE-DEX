@@ -7,8 +7,8 @@ import "../src/Tokens/Yees.sol";
 contract DeployState is Script {
     function run() external {
         vm.startBroadcast();
-        address Five = 0x3Bdbb84B90aBAf52814aAB54B9622408F2dCA483;
-        address Swap = 0x59589F149e9022f58E446d4A20a014c42541cA31;
+        address Five = 0xBAaB2913ec979d9d21785063a0e4141e5B787D28;
+        address Swap = 0x88359Fa9315F98e2E6D2aEb87fba121D2dDdaB71;
         Yees state = new Yees(
                 "Yees",
                 "Yees",
