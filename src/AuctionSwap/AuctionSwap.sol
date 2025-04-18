@@ -189,6 +189,13 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         emit RewardDistributed(user, reward);
     }
+	
+    function hasNewDavHoldings(address user) public view returns (bool) {
+        require(user != address(0), "Invalid user address");
+        uint256 currentDavHolding = dav.balanceOf(user);
+        uint256 lastHolding = lastDavHolding[user];
+        return currentDavHolding > lastHolding;
+    }
 
     function swapTokens(address user, address inputToken) public nonReentrant {
         require(supportedTokens[inputToken], "Unsupported token");
