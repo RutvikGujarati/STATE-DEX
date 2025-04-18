@@ -349,7 +349,28 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         return cycleNumber < MAX_AUCTIONS ? cycleNumber : MAX_AUCTIONS;
     }
+    function getAuctionTimeLeft(
+        address inputToken
+    ) public view returns (uint256) {
+        require(supportedTokens[inputToken], "Unsupported token");
+        AuctionCycle memory cycle = auctionCycles[inputToken][stateToken];
+        if (!cycle.isInitialized || cycle.auctionCount >= MAX_AUCTIONS) {
+            return 0;
+        }
 
+        uint256 currentTime = block.timestamp;
+        uint256 timeSinceStart = currentTime - cycle.firstAuctionStart;
+        uint256 fullCycleLength = AUCTION_INTERVAL;
+        uint256 currentCyclePosition = timeSinceStart % fullCycleLength;
+
+        if (isAuctionActive(inputToken)) {
+            return AUCTION_DURATION - currentCyclePosition;
+        } else if (isReverseAuctionActive(inputToken)) {
+            return REVERSE_DURATION - (timeSinceStart % AUCTION_INTERVAL);
+        }
+
+        return 0;
+    }
     function calculateAuctionEligibleAmount(
         address inputToken
     ) public view returns (uint256) {
