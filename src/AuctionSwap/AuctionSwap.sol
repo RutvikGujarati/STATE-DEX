@@ -180,7 +180,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         require(newDavContributed > 0, "No new DAV holdings");
 
         // **Effects**
-        uint256 reward = (newDavContributed * 10000) / 1e18;
+        uint256 reward = (newDavContributed * 10000 ether) / 1e18;
 
         cumulativeDavHoldings[user] += newDavContributed;
         lastDavHolding[user] = currentDavHolding;

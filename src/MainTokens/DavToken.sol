@@ -138,20 +138,21 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         bytes32 hash = keccak256(
             abi.encodePacked(user, block.timestamp, block.number)
         );
-        return toHexString(uint256(hash), 8);
+        return _toAlphanumericString(hash, 8);
     }
 
-    function toHexString(
-        uint256 value,
+    function _toAlphanumericString(
+        bytes32 hash,
         uint256 length
     ) internal pure returns (string memory) {
-        bytes memory buffer = new bytes(2 * length);
-        bytes memory alphabet = "0123456789abcdef";
-        for (uint256 i = 2 * length; i > 0; i--) {
-            buffer[i - 1] = alphabet[value & 0xf];
-            value >>= 4;
+        bytes
+            memory charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        bytes memory result = new bytes(length);
+        for (uint256 i = 0; i < length; i++) {
+            // Use each byte in the hash to pick a character from the charset
+            result[i] = charset[uint8(hash[i]) % charset.length];
         }
-        return string(buffer);
+        return string(result);
     }
 
     function _calculateETHDistribution(
