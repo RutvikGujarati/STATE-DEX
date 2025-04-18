@@ -102,6 +102,8 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         address _dav
     ) external onlyGovernance {
         require(_dav != address(0), "Invalid dav address");
+        supportedTokens[state] = true;
+        supportedTokens[_dav] = true;
         dav = IERC20(payable(_dav));
         stateToken = state;
     }
@@ -139,7 +141,9 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
             stateToken
         );
     }
-
+    function isTokenSupported(address token) public view returns (bool) {
+        return supportedTokens[token];
+    }
     function getRatioPrice(address inputToken) public view returns (uint256) {
         require(supportedTokens[inputToken], "Unsupported token");
         IPair pair = IPair(pairAddresses[inputToken]);
@@ -189,7 +193,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         emit RewardDistributed(user, reward);
     }
-	
+
     function hasNewDavHoldings(address user) public view returns (bool) {
         require(user != address(0), "Invalid user address");
         uint256 currentDavHolding = dav.balanceOf(user);
@@ -235,9 +239,11 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         address tokenIn = isReverseActive ? stateToken : inputToken;
         address tokenOut = isReverseActive ? inputToken : stateToken;
-        uint256 amountIn = calculateAuctionEligibleAmount(inputToken);
-        uint256 amountOut = getOutPutAmount(inputToken);
+        uint256 TotalAmountIn = calculateAuctionEligibleAmount(inputToken);
+        uint256 TotalAmountOut = getOutPutAmount(inputToken);
 
+        uint256 amountIn = isReverseActive ? TotalAmountOut : TotalAmountIn;
+        uint256 amountOut = isReverseActive ? TotalAmountIn : TotalAmountOut;
         require(
             amountIn > 0,
             "Not enough balance in user wallet of input token"

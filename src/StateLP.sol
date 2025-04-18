@@ -23,6 +23,7 @@ contract StateLP {
 
     address public Governance;
     address public pairAddress;
+    bool public isDavAdded = false;
     address public Wpls;
     address public stateAddress;
     address private constant BURN_ADDRESS =
@@ -82,6 +83,7 @@ contract StateLP {
     }
 
     function addDavToken(address _dav) public onlyGovernance {
+        isDavAdded = true;
         davToken = IERC20(payable(_dav));
     }
 
