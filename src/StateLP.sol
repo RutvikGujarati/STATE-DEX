@@ -10,8 +10,6 @@ contract StateLP {
     IERC20 public stateToken;
     IERC20 public davToken;
 
-    address public Governance;
-
     address public stateAddress;
     address private constant BURN_ADDRESS =
         0x0000000000000000000000000000000000000369;
@@ -35,23 +33,9 @@ contract StateLP {
     uint256 public totalStateBurned;
     mapping(address => BurnInfo) public userBurns;
 
-    constructor(address _state, address _governance) {
+    constructor(address _state) {
         stateToken = IERC20(_state);
         stateAddress = _state;
-        Governance = _governance;
-    }
-
-    modifier onlyGovernance() {
-        require(msg.sender == Governance, "Not authorized");
-        _;
-    }
-
-    function depositPLS() external payable onlyGovernance {
-        require(msg.value > 0, "Must send PLS");
-    }
-
-    function addDavToken(address _dav) public onlyGovernance {
-        davToken = IERC20(_dav);
     }
 
     function burnState(uint256 amount) external {
