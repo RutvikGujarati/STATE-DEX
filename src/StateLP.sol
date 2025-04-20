@@ -127,9 +127,7 @@ contract StateLP {
     function getRemainingClaimablePLS(
         address user
     ) public view returns (uint256) {
-        if (!canClaim(user)) return 0;
-
-        UserBurn[] memory burns = burnHistory[user];
+        UserBurn[] storage burns = burnHistory[user];
         if (burns.length == 0) return 0;
 
         uint256 totalReward = 0;
@@ -137,14 +135,21 @@ contract StateLP {
         uint256 monthlyPLS = availablePLS / 12;
 
         for (uint256 i = 0; i < burns.length; i++) {
-            if (burns[i].totalAtTime == 0) continue;
+            UserBurn storage burn = burns[i];
 
-            // User share for this burn
-            uint256 userShare = (burns[i].amount * 1e18) / burns[i].totalAtTime;
-
-            // PLS from this burn
-            uint256 reward = (monthlyPLS * userShare) / 1e18;
-            totalReward += reward;
+            for (uint256 j = 0; j < 12; j++) {
+                uint256 eligibleMonth = getMonthFromTimestamp(burn.timestamp) +
+                    j;
+                if (
+                    !burn.claimedMonths[j] &&
+                    getCurrentMonthNumber() >= eligibleMonth
+                ) {
+                    // Calculate share for this month
+                    uint256 share = (burn.amount * 1e18) / burn.totalAtTime;
+                    uint256 reward = (monthlyPLS * share) / 1e18;
+                    totalReward += reward;
+                }
+            }
         }
 
         return totalReward;
@@ -166,37 +171,43 @@ contract StateLP {
     }
 
     function claimPLS() external {
-        require(getCurrentDayOfMonth() >= 20, "Claiming starts on the 20th");
+        address user = msg.sender;
+        UserBurn[] storage burns = burnHistory[user];
+        require(burns.length > 0, "No burns found");
 
-        UserBurn[] storage burns = burnHistory[msg.sender];
-        require(burns.length > 0, "No burns to claim from");
+        uint256 totalReward = 0;
+        uint256 availablePLS = address(this).balance / 2;
+        uint256 monthlyPLS = availablePLS / 12;
 
-        uint256 totalClaimable;
-        uint256 totalAvailable = address(this).balance / 2; // 50% allocation
-        uint256 monthlyAllocation = totalAvailable / 12;
+        uint256 currentMonth = getCurrentMonthNumber();
 
         for (uint256 i = 0; i < burns.length; i++) {
-            UserBurn storage b = burns[i];
+            UserBurn storage burn = burns[i];
 
             for (uint256 j = 0; j < 12; j++) {
-                // Each entry is eligible once a month starting from burn timestamp
-                uint256 eligibleTime = b.timestamp + j * 30 days;
+                uint256 eligibleMonth = getMonthFromTimestamp(burn.timestamp) +
+                    j;
 
-                // Check if eligible & not claimed
-                if (block.timestamp >= eligibleTime && !b.claimedMonths[j]) {
-                    uint256 share = (b.amount * 1e18) / b.totalAtTime;
-                    uint256 reward = (monthlyAllocation * share) / 1e18;
-
-                    totalClaimable += reward;
-                    b.claimedMonths[j] = true;
+                if (!burn.claimedMonths[j] && currentMonth >= eligibleMonth) {
+                    uint256 share = (burn.amount * 1e18) / burn.totalAtTime;
+                    uint256 reward = (monthlyPLS * share) / 1e18;
+                    totalReward += reward;
+                    burn.claimedMonths[j] = true; // Mark this month's reward as claimed
                 }
             }
         }
 
-        require(totalClaimable > 0, "Nothing to claim");
+        require(totalReward > 0, "Nothing to claim");
 
-        (bool success, ) = payable(msg.sender).call{value: totalClaimable}("");
-        require(success, "Transfer failed");
+        (bool success, ) = payable(user).call{value: totalReward}("");
+        require(success, "PLS transfer failed");
+    }
+
+    function getMonthFromTimestamp(
+        uint256 timestamp
+    ) internal pure returns (uint256) {
+        (, uint256 month, ) = timestampToDate(timestamp);
+        return month;
     }
 
     function getContractPLSBalance() external view returns (uint256) {
