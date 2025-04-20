@@ -11,20 +11,28 @@ contract StateLP {
     IERC20 public davToken;
 
     address public Governance;
+
     address public stateAddress;
     address private constant BURN_ADDRESS =
         0x0000000000000000000000000000000000000369;
+
     uint256 public constant MIN_DAV = 1 * 1e18;
-    uint256 public constant MONTH = 30 days; // Approximate month length
-    uint256 public constant YEAR = 365 days; // Approximate year length
 
     struct BurnInfo {
-        uint256 totalBurned; // User's total burned STATE tokens
-        uint256 lastClaimed; // Timestamp of last claim
-        uint256 userShare; // User's share of total burned tokens (scaled by 1e18)
+        uint256 totalBurned;
+        uint256 lastClaimedMonth;
+        uint256 userShare; // Scaled by 1e18
+    }
+    struct UserBurn {
+        uint256 amount; // Amount of STATE burned
+        uint256 totalAtTime; // Total STATE burned at the time
+        uint256 timestamp; // Burn timestamp
+        bool[12] claimedMonths; // Claim status for each of the 12 months
     }
 
-    uint256 public totalStateBurned; // Total STATE tokens burned by all users
+    mapping(address => UserBurn[]) public burnHistory;
+
+    uint256 public totalStateBurned;
     mapping(address => BurnInfo) public userBurns;
 
     constructor(address _state, address _governance) {
@@ -52,49 +60,38 @@ contract StateLP {
             davToken.balanceOf(msg.sender) >= MIN_DAV,
             "Need at least 1 DAV"
         );
-
         require(amount > 0, "Burn amount must be > 0");
         require(
             stateToken.allowance(msg.sender, address(this)) >= amount,
             "Insufficient allowance"
         );
 
-        BurnInfo storage burnInfo = userBurns[msg.sender];
+        stateToken.safeTransferFrom(msg.sender, BURN_ADDRESS, amount);
 
         totalStateBurned += amount;
-        burnInfo.totalBurned += amount;
 
-        // Prevent division by zero
-        burnInfo.userShare = (burnInfo.totalBurned * 1e18) / totalStateBurned;
-
-        // Only set if first time
-        // burnInfo.lastClaimed = getPreviousMonth19th();
-
-        stateToken.safeTransferFrom(msg.sender, BURN_ADDRESS, amount);
-    }
-
-    function getPreviousMonth19th() public view returns (uint256) {
-        (uint256 year, uint256 month, ) = timestampToDate(block.timestamp);
-
-        if (month == 1) {
-            year -= 1;
-            month = 12;
-        } else {
-            month -= 1;
-        }
-
-        return timestampFromDate(year, month, 19);
-    }
-
-    function getCurrentMonth15th() public view returns (uint256) {
-        // Get the current timestamp in UTC
-        (uint256 year, uint256 month, ) = timestampToDate(block.timestamp);
-        return timestampFromDate(year, month, 19);
-    }
-
-    // Adapted from BokkyPooBah's DateTime Library
-    function isLeapYear(uint256 year) internal pure returns (bool) {
-        return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+        // Record snapshot
+        burnHistory[msg.sender].push(
+            UserBurn({
+                amount: amount,
+                totalAtTime: totalStateBurned,
+                timestamp: block.timestamp,
+                claimedMonths: [
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false
+                ]
+            })
+        );
     }
 
     function getCurrentMonthNumber() public view returns (uint256) {
@@ -107,26 +104,106 @@ contract StateLP {
         return day;
     }
 
-    function _daysInMonth(
-        uint256 month,
-        uint256 year
-    ) internal pure returns (uint8) {
-        if (month == 2) {
-            return isLeapYear(year) ? 29 : 28;
-        } else if (
-            month == 1 ||
-            month == 3 ||
-            month == 5 ||
-            month == 7 ||
-            month == 8 ||
-            month == 10 ||
-            month == 12
-        ) {
-            return 31;
-        } else {
-            return 30;
-        }
+    function isOnOrAfter20th() public view returns (bool) {
+        return getCurrentDayOfMonth() >= 20;
     }
+
+    function canClaimNow(address user) external view returns (bool) {
+        BurnInfo memory burn = userBurns[user];
+        if (burn.totalBurned == 0) return false;
+
+        uint256 currentMonth = getCurrentMonthNumber();
+        return isOnOrAfter20th() && (burn.lastClaimedMonth < currentMonth);
+    }
+
+    function canClaim(address user) public view returns (bool) {
+        BurnInfo memory info = userBurns[user];
+        uint256 day = getCurrentDayOfMonth();
+
+        // Can only claim on or after 20th, and only once per month
+        return (day >= 20 && info.lastClaimedMonth != getCurrentMonthNumber());
+    }
+
+    function getRemainingClaimablePLS(
+        address user
+    ) public view returns (uint256) {
+        if (!canClaim(user)) return 0;
+
+        UserBurn[] memory burns = burnHistory[user];
+        if (burns.length == 0) return 0;
+
+        uint256 totalReward = 0;
+        uint256 availablePLS = address(this).balance / 2;
+        uint256 monthlyPLS = availablePLS / 12;
+
+        for (uint256 i = 0; i < burns.length; i++) {
+            if (burns[i].totalAtTime == 0) continue;
+
+            // User share for this burn
+            uint256 userShare = (burns[i].amount * 1e18) / burns[i].totalAtTime;
+
+            // PLS from this burn
+            uint256 reward = (monthlyPLS * userShare) / 1e18;
+            totalReward += reward;
+        }
+
+        return totalReward;
+    }
+
+    function getMissedMonthsAndUnclaimedPLS(
+        address user
+    ) external view returns (uint256 missedMonths, uint256 totalPLS) {
+        BurnInfo memory burn = userBurns[user];
+        if (burn.totalBurned == 0 || burn.userShare == 0) return (0, 0);
+
+        uint256 currentMonth = getCurrentMonthNumber();
+        if (burn.lastClaimedMonth >= currentMonth) return (0, 0);
+
+        missedMonths = currentMonth - burn.lastClaimedMonth;
+        uint256 availablePLS = address(this).balance / 2;
+        uint256 monthlyPLS = availablePLS / 12;
+        totalPLS = ((monthlyPLS * burn.userShare) / 1e18) * missedMonths;
+    }
+
+    function claimPLS() external {
+        require(getCurrentDayOfMonth() >= 20, "Claiming starts on the 20th");
+
+        UserBurn[] storage burns = burnHistory[msg.sender];
+        require(burns.length > 0, "No burns to claim from");
+
+        uint256 totalClaimable;
+        uint256 totalAvailable = address(this).balance / 2; // 50% allocation
+        uint256 monthlyAllocation = totalAvailable / 12;
+
+        for (uint256 i = 0; i < burns.length; i++) {
+            UserBurn storage b = burns[i];
+
+            for (uint256 j = 0; j < 12; j++) {
+                // Each entry is eligible once a month starting from burn timestamp
+                uint256 eligibleTime = b.timestamp + j * 30 days;
+
+                // Check if eligible & not claimed
+                if (block.timestamp >= eligibleTime && !b.claimedMonths[j]) {
+                    uint256 share = (b.amount * 1e18) / b.totalAtTime;
+                    uint256 reward = (monthlyAllocation * share) / 1e18;
+
+                    totalClaimable += reward;
+                    b.claimedMonths[j] = true;
+                }
+            }
+        }
+
+        require(totalClaimable > 0, "Nothing to claim");
+
+        (bool success, ) = payable(msg.sender).call{value: totalClaimable}("");
+        require(success, "Transfer failed");
+    }
+
+    function getContractPLSBalance() external view returns (uint256) {
+        return address(this).balance;
+    }
+
+    // --- Date Utility Functions ---
 
     function timestampToDate(
         uint256 timestamp
@@ -144,142 +221,106 @@ contract StateLP {
         year += (month <= 2 ? 1 : 0);
     }
 
-    function timestampFromDate(
-        uint256 year,
-        uint256 month,
-        uint256 day
-    ) public pure returns (uint256 timestamp) {
-        uint256 y = year;
-        uint256 m = month;
-        uint256 d = day;
-        require(y >= 1970);
-        int256 _days = int256(
-            d -
-                32075 +
-                (1461 * (y + 4800 + (m - 14) / 12)) /
-                4 +
-                (367 * (m - 2 - ((m - 14) / 12) * 12)) /
-                12 -
-                (3 * ((y + 4900 + (m - 14) / 12) / 100)) /
-                4 -
-                2440588
-        );
-        timestamp = uint256(_days) * 86400;
-    }
-
-    // Helper function to get the timestamp of the 15th of the next month
-    function getNextMonth15th() public view returns (uint256) {
-        return getCurrentMonth15th() + MONTH;
-    }
-
-    // Helper function to check if current date is on or after the 15th of the month
-    function isOnOrAfter20th() public view returns (bool) {
-        return getCurrentDayOfMonth() >= 20;
-    }
-
-    // Helper function to check if current date is within the same month as a given timestamp
-    function isSameMonth(uint256 timestamp) public view returns (bool) {
-        uint256 currentMonthStart = (block.timestamp / MONTH) * MONTH;
-        uint256 givenMonthStart = (timestamp / MONTH) * MONTH;
-        return currentMonthStart == givenMonthStart;
-    }
-
-    function getRemainingClaimablePLS(
+    function getNextClaimDate(
         address user
-    ) public view returns (uint256) {
-        BurnInfo memory burnInfo = userBurns[user];
-        if (burnInfo.totalBurned == 0 || burnInfo.userShare == 0) return 0;
-
-        // Check if user has already claimed this month
-        if (isSameMonth(burnInfo.lastClaimed)) {
-            return 0;
-        }
-
-        // Total PLS available to distribute (50% of contract balance)
-        uint256 availablePLS = address(this).balance / 2;
-        if (availablePLS == 0) return 0;
-
-        // Monthly distribution
-        uint256 monthlyPLS = availablePLS / 12;
-
-        // User's monthly share based on their userShare
-        uint256 monthlyUserReward = (monthlyPLS * burnInfo.userShare) / 1e18;
-
-        return monthlyUserReward;
-    }
-
-    function claimPLS() external {
-        BurnInfo storage burnInfo = userBurns[msg.sender];
-        require(burnInfo.totalBurned > 0, "No STATE burned");
-        require(isOnOrAfter20th(), "Claims only allowed on or after the 20th");
-
-        (, uint256 lastClaimMonth, ) = timestampToDate(burnInfo.lastClaimed);
-        uint256 currentMonth = getCurrentMonthNumber();
-        require(lastClaimMonth != currentMonth, "Already claimed this month");
-
-        // Total PLS available to distribute (50% of contract balance)
-        uint256 availablePLS = address(this).balance / 2;
-        require(availablePLS > 0, "No PLS available");
-
-        // Monthly distribution
-        uint256 monthlyPLS = availablePLS / 12;
-
-        // User's monthly share based on their userShare
-        uint256 monthlyUserReward = (monthlyPLS * burnInfo.userShare) / 1e18;
-        require(monthlyUserReward > 0, "Nothing to claim");
-
-        // Update lastClaimed to current timestamp
-        burnInfo.lastClaimed = block.timestamp;
-
-        // Transfer PLS to user
-        (bool success, ) = payable(msg.sender).call{value: monthlyUserReward}(
-            ""
-        );
-        require(success, "PLS transfer failed");
-    }
-
-    function nextClaimDate(address user) external view returns (uint256) {
+    ) public view returns (string memory) {
         BurnInfo memory burn = userBurns[user];
-
-        (, uint256 currentMonth, ) = timestampToDate(block.timestamp);
-        (, uint256 lastClaimMonth, ) = timestampToDate(burn.lastClaimed);
-
-        if (burn.lastClaimed == 0 || lastClaimMonth != currentMonth) {
-            // User hasn't claimed this month
-            return
-                timestampFromDate(
-                    block.timestamp / 365 days + 1970,
-                    currentMonth,
-                    20
-                );
+        if (burn.totalBurned == 0) {
+            return "No STATE burned";
         }
 
-        // Next month
-        uint256 year;
+        uint256 currentMonth = getCurrentMonthNumber();
         uint256 nextMonth;
-        if (currentMonth == 12) {
-            year = (block.timestamp / YEAR) + 1971;
-            nextMonth = 1;
+
+        if (burn.lastClaimedMonth == 0) {
+            // User never claimed, next claim is current month if it's 20th or later
+            if (getCurrentDayOfMonth() >= 20) {
+                nextMonth = currentMonth;
+            } else {
+                nextMonth = currentMonth;
+            }
+        } else if (burn.lastClaimedMonth < currentMonth) {
+            if (getCurrentDayOfMonth() >= 20) {
+                nextMonth = currentMonth;
+            } else {
+                nextMonth = currentMonth;
+            }
         } else {
-            year = (block.timestamp / YEAR) + 1970;
             nextMonth = currentMonth + 1;
+            if (nextMonth > 12) {
+                nextMonth = 1;
+            }
         }
 
-        return timestampFromDate(year, nextMonth, 20);
+        return string(abi.encodePacked("20 - ", monthNumberToName(nextMonth)));
     }
 
-    function canClaimNow(address user) external view returns (bool) {
-        BurnInfo memory burn = userBurns[user];
-        if (burn.totalBurned == 0) return false;
+    function getUserSharePercentage(
+        address user
+    ) external view returns (uint256) {
+        UserBurn[] memory burns = burnHistory[user];
+        if (burns.length == 0) return 0;
 
-        (, uint256 lastClaimMonth, ) = timestampToDate(burn.lastClaimed);
-        uint256 currentMonth = getCurrentMonthNumber();
+        uint256 totalWeightedShare = 0;
+        uint256 totalBurned = 0;
 
-        return isOnOrAfter20th() && lastClaimMonth != currentMonth;
+        for (uint256 i = 0; i < burns.length; i++) {
+            if (burns[i].totalAtTime == 0) continue; // Avoid div by 0
+            uint256 share = (burns[i].amount * 1e18) / burns[i].totalAtTime;
+            totalWeightedShare += share * burns[i].amount;
+            totalBurned += burns[i].amount;
+        }
+
+        if (totalBurned == 0) return 0;
+
+        // Average share weighted by burned amount
+        uint256 avgShare = totalWeightedShare / totalBurned;
+
+        // Convert to percentage
+        return (avgShare * 100) / 1e18;
     }
 
-    function getContractPLSBalance() external view returns (uint256) {
-        return address(this).balance;
+    function uintToString(uint256 v) internal pure returns (string memory str) {
+        if (v == 0) {
+            return "0";
+        }
+        uint256 maxlength = 100;
+        bytes memory reversed = new bytes(maxlength);
+        uint256 i = 0;
+        while (v != 0) {
+            uint256 remainder = v % 10;
+            v = v / 10;
+            reversed[i++] = bytes1(uint8(48 + remainder));
+        }
+        bytes memory s = new bytes(i);
+        for (uint256 j = 0; j < i; j++) {
+            s[j] = reversed[i - 1 - j];
+        }
+        str = string(s);
+    }
+
+    function monthNumberToName(
+        uint256 month
+    ) public pure returns (string memory) {
+        string[12] memory months = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December"
+        ];
+        if (month >= 1 && month <= 12) {
+            return months[month - 1];
+        } else {
+            return "Unknown";
+        }
     }
 
     receive() external payable {}
