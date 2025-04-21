@@ -118,17 +118,15 @@ contract StateLP {
         uint256 availablePLS = address(this).balance / 2;
         uint256 monthlyPLS = availablePLS / 12;
 
+        uint256 nowTime = block.timestamp;
+
         for (uint256 i = 0; i < burns.length; i++) {
             UserBurn storage burn = burns[i];
 
             for (uint256 j = 0; j < 12; j++) {
-                uint256 eligibleMonth = getMonthFromTimestamp(burn.timestamp) +
-                    j;
-                if (
-                    !burn.claimedMonths[j] &&
-                    getCurrentMonthNumber() >= eligibleMonth
-                ) {
-                    // Calculate share for this month
+                uint256 eligibleTime = burn.timestamp + (j * 1 hours);
+
+                if (!burn.claimedMonths[j] && nowTime >= eligibleTime) {
                     uint256 share = (burn.amount * 1e18) / burn.totalAtTime;
                     uint256 reward = (monthlyPLS * share) / 1e18;
                     totalReward += reward;
@@ -163,20 +161,19 @@ contract StateLP {
         uint256 availablePLS = address(this).balance / 2;
         uint256 monthlyPLS = availablePLS / 12;
 
-        uint256 currentMonth = getCurrentMonthNumber();
+        uint256 nowTime = block.timestamp;
 
         for (uint256 i = 0; i < burns.length; i++) {
             UserBurn storage burn = burns[i];
 
             for (uint256 j = 0; j < 12; j++) {
-                uint256 eligibleMonth = getMonthFromTimestamp(burn.timestamp) +
-                    j;
+                uint256 eligibleTime = burn.timestamp + (j * 1 hours);
 
-                if (!burn.claimedMonths[j] && currentMonth >= eligibleMonth) {
+                if (!burn.claimedMonths[j] && nowTime >= eligibleTime) {
                     uint256 share = (burn.amount * 1e18) / burn.totalAtTime;
                     uint256 reward = (monthlyPLS * share) / 1e18;
                     totalReward += reward;
-                    burn.claimedMonths[j] = true; // Mark this month's reward as claimed
+                    burn.claimedMonths[j] = true;
                 }
             }
         }

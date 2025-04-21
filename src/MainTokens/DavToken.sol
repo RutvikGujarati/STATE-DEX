@@ -11,7 +11,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     Ownable(msg.sender),
     ReentrancyGuard
 {
-	    using SafeERC20 for IERC20;
+    using SafeERC20 for IERC20;
 
     uint256 public constant MAX_SUPPLY = 5000000 ether; // 5 Million DAV Tokens
     uint256 public constant TOKEN_COST = 1000000 ether; // 500000 org
@@ -74,6 +74,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(address => uint256) public holderRewards;
     mapping(address => uint256) public userRewardPerTokenPaid;
     mapping(address => uint256) public userMintedAmount;
+	mapping(address => uint256) public lastClaimedAt;
 
     event TokensMinted(
         address indexed user,
@@ -264,6 +265,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             uint256 residualDust = holderShare - usedHolderShare;
 
             holderFunds += usedHolderShare;
+            stateLpTotalShare += stateLPShare;
             unallocatedHolderDust += residualDust;
             totalRewardPerTokenStored += rewardPerToken;
         }
@@ -307,8 +309,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
                 block.timestamp
             );
         }
-
-        stateLpTotalShare += stateLPShare;
 
         userMintedAmount[msg.sender] += amount;
         if (!isDAVHolder[msg.sender]) {
@@ -381,10 +381,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     // ------------------ StateLp functions ------------------------------
 
     function burnState(uint256 amount) external {
-        require(
-        	balanceOf(msg.sender) >= MIN_DAV,
-            "Need at least 1 DAV"
-        );
+        require(balanceOf(msg.sender) >= MIN_DAV, "Need at least 10 DAV");
         require(amount > 0, "Burn amount must be > 0");
         require(
             StateLP.allowance(msg.sender, address(this)) >= amount,
@@ -459,17 +456,15 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         uint256 availablePLS = address(this).balance / 2;
         uint256 monthlyPLS = availablePLS / 12;
 
+        uint256 nowTime = block.timestamp;
+
         for (uint256 i = 0; i < burns.length; i++) {
             UserBurn storage burn = burns[i];
 
             for (uint256 j = 0; j < 12; j++) {
-                uint256 eligibleMonth = getMonthFromTimestamp(burn.timestamp) +
-                    j;
-                if (
-                    !burn.claimedMonths[j] &&
-                    getCurrentMonthNumber() >= eligibleMonth
-                ) {
-                    // Calculate share for this month
+                uint256 eligibleTime = burn.timestamp + (j * 1 hours);
+
+                if (!burn.claimedMonths[j] && nowTime >= eligibleTime) {
                     uint256 share = (burn.amount * 1e18) / burn.totalAtTime;
                     uint256 reward = (monthlyPLS * share) / 1e18;
                     totalReward += reward;
@@ -479,7 +474,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         return totalReward;
     }
-
     function getMissedMonthsAndUnclaimedPLS(
         address user
     ) external view returns (uint256 missedMonths, uint256 totalPLS) {
@@ -500,34 +494,38 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         UserBurn[] storage burns = burnHistory[user];
         require(burns.length > 0, "No burns found");
 
-        uint256 totalReward = 0;
-        uint256 availablePLS = stateLpTotalShare;
-        uint256 monthlyPLS = availablePLS / 12;
+        // Require at least 1 hour since last claim
+        require(
+            block.timestamp >= lastClaimedAt[user] + 1 hours,
+            "Can only claim once per hour"
+        );
 
-        uint256 currentMonth = getCurrentMonthNumber();
+        uint256 totalReward = 0;
+        uint256 availablePLS = address(this).balance / 2;
+        uint256 monthlyPLS = availablePLS / 12;
 
         for (uint256 i = 0; i < burns.length; i++) {
             UserBurn storage burn = burns[i];
 
             for (uint256 j = 0; j < 12; j++) {
-                uint256 eligibleMonth = getMonthFromTimestamp(burn.timestamp) +
-                    j;
+                uint256 eligibleTime = burn.timestamp + (j * 1 hours);
 
-                if (!burn.claimedMonths[j] && currentMonth >= eligibleMonth) {
+                if (!burn.claimedMonths[j] && block.timestamp >= eligibleTime) {
                     uint256 share = (burn.amount * 1e18) / burn.totalAtTime;
                     uint256 reward = (monthlyPLS * share) / 1e18;
                     totalReward += reward;
-                    burn.claimedMonths[j] = true; // Mark this month's reward as claimed
+                    burn.claimedMonths[j] = true;
                 }
             }
         }
 
         require(totalReward > 0, "Nothing to claim");
 
+        lastClaimedAt[user] = block.timestamp; // ⏱ update last claimed time
+        stateLpTotalShare -= totalReward;
         (bool success, ) = payable(user).call{value: totalReward}("");
         require(success, "PLS transfer failed");
     }
-
     function getMonthFromTimestamp(
         uint256 timestamp
     ) internal pure returns (uint256) {
@@ -536,7 +534,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     }
 
     function getContractPLSBalance() external view returns (uint256) {
-        return address(this).balance;
+        return stateLpTotalShare;
     }
 
     // --- Date Utility Functions ---
