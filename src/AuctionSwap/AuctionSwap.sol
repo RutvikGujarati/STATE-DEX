@@ -210,11 +210,19 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         return false;
     }
 
-    function hasNewDavHoldings(address user) public view returns (bool) {
+    function getClaimableReward(address user) public view returns (uint256) {
         require(user != address(0), "Invalid user address");
+
         uint256 currentDavHolding = dav.balanceOf(user);
         uint256 lastHolding = lastDavHolding[user];
-        return currentDavHolding > lastHolding;
+        uint256 newDavContributed = currentDavHolding > lastHolding
+            ? currentDavHolding - lastHolding
+            : 0;
+
+        // Calculate reward as in distributeReward
+        uint256 reward = (newDavContributed * 10000 ether) / 1e18;
+
+        return reward;
     }
 
     function swapTokens(address user, address inputToken) public nonReentrant {
@@ -328,25 +336,21 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     function isAuctionActive(address inputToken) public view returns (bool) {
         require(supportedTokens[inputToken], "Unsupported token");
         AuctionCycle memory cycle = auctionCycles[inputToken][stateToken];
-        uint256 currentCycleNumber = getCurrentAuctionCycle(inputToken);
-        if (!cycle.isInitialized || currentCycleNumber >= MAX_AUCTIONS) {
-            return false;
-        }
+
+        if (!cycle.isInitialized) return false;
 
         uint256 currentTime = block.timestamp;
         uint256 timeSinceStart = currentTime - cycle.firstAuctionStart;
-        uint256 cycleNumber = timeSinceStart / AUCTION_INTERVAL;
-        uint256 fullCycleLength = AUCTION_DURATION + AUCTION_INTERVAL;
+
+        uint256 fullCycleLength = AUCTION_DURATION + AUCTION_INTERVAL; // 2 hours total
+        uint256 cycleNumber = timeSinceStart / fullCycleLength;
         uint256 currentCyclePosition = timeSinceStart % fullCycleLength;
 
-        if (
-            currentCyclePosition < AUCTION_DURATION &&
-            cycleNumber < MAX_AUCTIONS
-        ) {
-            return true;
-        }
+        // Prevent running beyond max auctions
+        if (cycleNumber >= MAX_AUCTIONS) return false;
 
-        return false;
+        // Auction only active in the first 1 hour of the 2-hour cycle
+        return currentCyclePosition < AUCTION_DURATION;
     }
 
     function isReverseAuctionActive(
