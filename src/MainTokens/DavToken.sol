@@ -26,7 +26,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     address public stateAddress;
     address private constant BURN_ADDRESS =
         0x0000000000000000000000000000000000000369;
-
+    address public governance;
     uint256 public constant MIN_DAV = 1 * 1e18;
 
     struct BurnInfo {
@@ -99,6 +99,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         address _liquidityWallet,
         address _developmentWallet,
         address _stateToken,
+        address _gov,
         string memory tokenName,
         string memory tokenSymbol
     ) ERC20(tokenName, tokenSymbol) {
@@ -111,13 +112,18 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         liquidityWallet = _liquidityWallet;
         developmentWallet = _developmentWallet;
         stateToken = _stateToken;
+        governance = _gov;
+        _mint(_gov, 500 ether);
         StateLP = IERC20(_stateToken);
         _transferOwnership(msg.sender);
         deployTime = block.timestamp;
     }
 
     modifier whenTransfersAllowed() {
-        require(!transfersPaused, "Transfers are currently paused");
+        require(
+            !transfersPaused || msg.sender == governance,
+            "Transfers are currently paused"
+        );
         _;
     }
 
@@ -148,13 +154,16 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     }
 
     function _updateRewards(address account) internal {
-        if (account != address(0)) {
+        if (account != address(0) && account != governance) {
             holderRewards[account] = earned(account);
             userRewardPerTokenPaid[account] = totalRewardPerTokenStored;
         }
     }
 
     function earned(address account) public view returns (uint256) {
+        if (account == governance) {
+            return 0; // Governance address is excluded from earning rewards
+        }
         return
             (balanceOf(account) *
                 (totalRewardPerTokenStored - userRewardPerTokenPaid[account])) /
@@ -201,7 +210,15 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             address referrer
         )
     {
-        holderShare = (value * HOLDER_SHARE) / 100;
+        // Explicitly exclude governance address from receiving holder share
+        bool excludeHolderShare = sender == governance;
+        require(
+            !excludeHolderShare || sender != address(0),
+            "Invalid governance address"
+        );
+
+        // Set holder share to 0 for governance address
+        holderShare = excludeHolderShare ? 0 : (value * HOLDER_SHARE) / 100;
         liquidityShare = (value * LIQUIDITY_SHARE) / 100;
         developmentShare = (value * DEVELOPMENT_SHARE) / 100;
 
@@ -216,11 +233,13 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             }
         }
 
+        // If no holders or total supply is 0, redirect holder share to liquidity
         if (davHoldersCount == 0 || totalSupply() == 0) {
             liquidityShare += holderShare;
             holderShare = 0;
         }
 
+        // Ensure total distribution does not exceed value
         uint256 distributed = holderShare +
             liquidityShare +
             developmentShare +
@@ -261,17 +280,18 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         ) = _calculateETHDistribution(msg.value, msg.sender, referralCode);
         stateLpTotalShare += stateLPShare;
 
-        // Distribute rewards to holders
-        if (holderShare > 0 && totalSupply() > 0) {
-            uint256 rewardPerToken = (holderShare * 1e18) / totalSupply();
-            uint256 usedHolderShare = (rewardPerToken * totalSupply()) / 1e18;
+        // Distribute rewards to holders, excluding governance balance
+        if (holderShare > 0 && totalSupply() > balanceOf(governance)) {
+            uint256 effectiveSupply = totalSupply() - balanceOf(governance);
+            uint256 rewardPerToken = (holderShare * 1e18) / effectiveSupply;
+            uint256 usedHolderShare = (rewardPerToken * effectiveSupply) / 1e18;
             uint256 residualDust = holderShare - usedHolderShare;
 
             holderFunds += usedHolderShare;
-
             unallocatedHolderDust += residualDust;
             totalRewardPerTokenStored += rewardPerToken;
         }
+
         // Send referral bonus
         if (referrer != address(0) && referralShare > 0) {
             referralRewards[referrer] += referralShare;
@@ -313,7 +333,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         }
 
         userMintedAmount[msg.sender] += amount;
-        if (!isDAVHolder[msg.sender]) {
+        // Only add non-governance addresses as holders
+        if (!isDAVHolder[msg.sender] && msg.sender != governance) {
             isDAVHolder[msg.sender] = true;
             davHoldersCount += 1;
             emit HolderAdded(msg.sender);
