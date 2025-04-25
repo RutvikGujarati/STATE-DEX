@@ -54,8 +54,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     }
 
     uint256 public TotalBurnedStates;
-    uint256 public TotalTokensBurned;
-    uint256 public totalBounty;
 
     struct AuctionCycle {
         uint256 firstAuctionStart;
@@ -74,6 +72,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         public userSwapTotalInfo; // user => inputToken => stateToken => cycle => UserSwapInfo
     mapping(address => mapping(address => AuctionCycle)) public auctionCycles; // inputToken => stateToken => AuctionCycle
     mapping(address => uint256) public TotalStateBurnedByUser;
+    mapping(address => uint256) public TotalTokensBurned;
     mapping(address => uint256) private lastGovernanceUpdate;
     mapping(address => bool) public hasClaimed;
 
@@ -297,6 +296,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
             );
             IERC20(tokenIn).safeTransferFrom(user, BURN_ADDRESS, amountIn);
             TotalBurnedStates += amountIn;
+            TotalTokensBurned[tokenIn] += amountIn;
             TotalStateBurnedByUser[user] += amountIn;
             IERC20(tokenOut).safeTransfer(user, amountOut);
         } else {
@@ -306,7 +306,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
                 "Output token vault empty"
             );
             IERC20(tokenIn).safeTransferFrom(user, BURN_ADDRESS, amountIn);
-            TotalTokensBurned += amountIn;
+            TotalTokensBurned[tokenIn] += amountIn;
             IERC20(tokenOut).safeTransfer(user, amountOut);
         }
 
@@ -335,21 +335,20 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
     function isAuctionActive(address inputToken) public view returns (bool) {
         require(supportedTokens[inputToken], "Unsupported token");
-        AuctionCycle memory cycle = auctionCycles[inputToken][stateToken];
 
+        AuctionCycle memory cycle = auctionCycles[inputToken][stateToken];
         if (!cycle.isInitialized) return false;
 
+        uint256 fullCycleLength = AUCTION_DURATION + AUCTION_INTERVAL;
         uint256 currentTime = block.timestamp;
+
         uint256 timeSinceStart = currentTime - cycle.firstAuctionStart;
-
-        uint256 fullCycleLength = AUCTION_DURATION + AUCTION_INTERVAL; // 2 hours total
         uint256 cycleNumber = timeSinceStart / fullCycleLength;
-        uint256 currentCyclePosition = timeSinceStart % fullCycleLength;
 
-        // Prevent running beyond max auctions
         if (cycleNumber >= MAX_AUCTIONS) return false;
 
-        // Auction only active in the first 1 hour of the 2-hour cycle
+        uint256 currentCyclePosition = timeSinceStart % fullCycleLength;
+
         return currentCyclePosition < AUCTION_DURATION;
     }
 
@@ -357,63 +356,76 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         address inputToken
     ) public view returns (bool) {
         require(supportedTokens[inputToken], "Unsupported token");
+
         AuctionCycle memory cycle = auctionCycles[inputToken][stateToken];
+        if (!cycle.isInitialized) return false;
 
-        uint256 currentCycleNumber = getCurrentAuctionCycle(inputToken);
-        if (!cycle.isInitialized || currentCycleNumber >= MAX_AUCTIONS) {
-            return false;
-        }
-
+        uint256 fullCycleLength = AUCTION_DURATION + AUCTION_INTERVAL;
         uint256 currentTime = block.timestamp;
+
         uint256 timeSinceStart = currentTime - cycle.firstAuctionStart;
-        uint256 cycleNumber = timeSinceStart / AUCTION_INTERVAL;
+        uint256 cycleNumber = timeSinceStart / fullCycleLength;
 
-        // ✅ Prevent reverse auction if auction count has reached or surpassed MAX
-        if (cycleNumber >= MAX_AUCTIONS) {
-            return false;
-        }
+        if (cycleNumber >= MAX_AUCTIONS) return false;
 
-        // Reverse auction happens on 4th, 8th, 12th, etc.
+        // Reverse auction only happens on every 4th cycle (1-indexed: 4, 8, 12...)
+        if ((cycleNumber + 1) % 4 != 0) return false;
+
+        uint256 currentCycleStart = cycle.firstAuctionStart +
+            cycleNumber *
+            fullCycleLength;
+        uint256 auctionEndTime = currentCycleStart + AUCTION_DURATION;
+        uint256 reverseAuctionEndTime = auctionEndTime + REVERSE_DURATION;
+
         return
-            (cycleNumber + 1) % 4 == 0 &&
-            timeSinceStart % AUCTION_INTERVAL < REVERSE_DURATION;
+            currentTime >= auctionEndTime &&
+            currentTime < reverseAuctionEndTime;
     }
 
     function getCurrentAuctionCycle(
         address inputToken
     ) public view returns (uint256) {
         AuctionCycle memory cycle = auctionCycles[inputToken][stateToken];
-        if (!cycle.isInitialized || cycle.auctionCount >= MAX_AUCTIONS)
-            return 0;
+        if (!cycle.isInitialized) return 0;
 
+        uint256 fullCycleLength = AUCTION_DURATION + AUCTION_INTERVAL;
         uint256 timeSinceStart = block.timestamp - cycle.firstAuctionStart;
-        uint256 cycleNumber = timeSinceStart / AUCTION_INTERVAL;
+        uint256 cycleNumber = timeSinceStart / fullCycleLength;
 
-        return cycleNumber < MAX_AUCTIONS ? cycleNumber : MAX_AUCTIONS;
+        // Cap it to MAX_AUCTIONS if needed
+        if (cycleNumber >= MAX_AUCTIONS) {
+            return MAX_AUCTIONS;
+        }
+
+        return cycleNumber;
     }
+
     function getAuctionTimeLeft(
         address inputToken
     ) public view returns (uint256) {
         require(supportedTokens[inputToken], "Unsupported token");
-        AuctionCycle memory cycle = auctionCycles[inputToken][stateToken];
-        uint256 currentCycleNumber = getCurrentAuctionCycle(inputToken);
 
-        if (!cycle.isInitialized || currentCycleNumber >= MAX_AUCTIONS) {
-            return 0;
-        }
+        AuctionCycle memory cycle = auctionCycles[inputToken][stateToken];
+        if (!cycle.isInitialized) return 0;
+
+        uint256 fullCycleLength = AUCTION_DURATION + AUCTION_INTERVAL;
         uint256 currentTime = block.timestamp;
+
         uint256 timeSinceStart = currentTime - cycle.firstAuctionStart;
-        uint256 fullCycleLength = AUCTION_INTERVAL;
+        uint256 cycleNumber = timeSinceStart / fullCycleLength;
+
+        // Respect max auction limit
+        if (cycleNumber >= MAX_AUCTIONS) return 0;
+
         uint256 currentCyclePosition = timeSinceStart % fullCycleLength;
 
-        if (isAuctionActive(inputToken)) {
+        if (currentCyclePosition < AUCTION_DURATION) {
             return AUCTION_DURATION - currentCyclePosition;
-        } else if (isReverseAuctionActive(inputToken)) {
-            return REVERSE_DURATION - (timeSinceStart % AUCTION_INTERVAL);
         }
 
         return 0;
     }
+
     function calculateAuctionEligibleAmount(
         address inputToken
     ) public view returns (uint256) {
@@ -483,11 +495,9 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         return TotalStateBurnedByUser[user];
     }
 
-    function getTotalBountyCollected() public view returns (uint256) {
-        return totalBounty;
-    }
-
-    function getTotalTokensBurned() public view returns (uint256) {
-        return TotalTokensBurned;
+    function getTotalTokensBurned(
+        address inputToken
+    ) public view returns (uint256) {
+        return TotalTokensBurned[inputToken];
     }
 }

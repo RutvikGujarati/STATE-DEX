@@ -56,7 +56,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     uint256 public developmentFunds;
     uint256 public stateLpTotalShare;
     uint256 public holderFunds; // Tracks ETH allocated for holder rewards
-
+    mapping(address => uint256) public firstBurnTimestamp;
     uint256 public deployTime;
     uint256 public constant davIncrement = 1;
     uint256 public totalLiquidityAllocated;
@@ -133,12 +133,15 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     ) public override whenTransfersAllowed returns (bool) {
         return super.approve(spender, amount);
     }
-
     function transfer(
         address recipient,
         uint256 amount
     ) public override whenTransfersAllowed returns (bool) {
-        return super.transfer(recipient, amount);
+        bool success = super.transfer(recipient, amount);
+        if (success) {
+            _assignReferralCodeIfNeeded(recipient); // safe, only if no code
+        }
+        return success;
     }
 
     function transferFrom(
@@ -146,7 +149,19 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         address recipient,
         uint256 amount
     ) public override whenTransfersAllowed returns (bool) {
-        return super.transferFrom(sender, recipient, amount);
+        bool success = super.transferFrom(sender, recipient, amount);
+        if (success) {
+            _assignReferralCodeIfNeeded(recipient); // safe, only if no code
+        }
+        return success;
+    }
+    function _assignReferralCodeIfNeeded(address user) internal {
+        if (bytes(userReferralCode[user]).length == 0) {
+            string memory code = _generateReferralCode(user);
+            userReferralCode[user] = code;
+            referralCodeToUser[code] = user;
+            emit ReferralCodeGenerated(user, code);
+        }
     }
 
     function viewLastMintTimeStamp(address user) public view returns (uint256) {
@@ -370,10 +385,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         return userMintedAmount[user];
     }
 
-    function isHolder(address account) external view returns (bool) {
-        return isDAVHolder[account];
-    }
-
     function getUserHoldingPercentage(
         address user
     ) public view returns (uint256) {
@@ -391,16 +402,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         return userReferralCode[user];
     }
 
-    function isValidReferralCode(
-        string memory referralCode
-    ) external view returns (bool) {
-        return referralCodeToUser[referralCode] != address(0);
-    }
-
-    function getHolderFunds() external view returns (uint256) {
-        return holderFunds;
-    }
-
     // ------------------ StateLp functions ------------------------------
     function burnState(uint256 amount) external {
         require(balanceOf(msg.sender) >= MIN_DAV, "Need at least 10 DAV");
@@ -409,8 +410,9 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             StateLP.allowance(msg.sender, address(this)) >= amount,
             "Insufficient allowance"
         );
-
-        StateLP.safeTransferFrom(msg.sender, BURN_ADDRESS, amount);
+        if (burnHistory[msg.sender].length == 0) {
+            firstBurnTimestamp[msg.sender] = block.timestamp;
+        }
         totalStateBurned += amount;
         userBurnedAmount[msg.sender] += amount;
 
@@ -422,12 +424,26 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
                 claimed: false
             })
         );
+        StateLP.safeTransferFrom(msg.sender, BURN_ADDRESS, amount);
     }
 
     function canClaim(address user) public view returns (bool) {
         UserBurn[] memory burns = burnHistory[user];
         if (burns.length == 0) return false;
-        return block.timestamp >= lastClaimedAt[user] + 24 hours;
+
+        uint256 timeSinceFirstBurn = block.timestamp - firstBurnTimestamp[user];
+
+        // First claim requires 24 hours since first burn
+        if (timeSinceFirstBurn < 24 hours) return false;
+
+        // Calculate the current cycle
+        uint256 cyclesElapsed = timeSinceFirstBurn / 24 hours;
+        uint256 currentCycleStart = firstBurnTimestamp[user] +
+            cyclesElapsed *
+            24 hours;
+
+        // Check if user has claimed in the current cycle
+        return lastClaimedAt[user] < currentCycleStart;
     }
 
     function getClaimablePLS(address user) public view returns (uint256) {
@@ -457,17 +473,21 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         uint256 totalReward = 0;
 
         for (uint256 i = 0; i < burns.length; i++) {
-            if (
-                !burns[i].claimed &&
-                block.timestamp >= burns[i].timestamp + 24 hours
-            ) {
+            if (!burns[i].claimed) {
                 totalReward += (availablePLS * userShare) / 1e18;
                 burns[i].claimed = true;
             }
         }
         require(totalReward > 0, "Nothing to claim");
 
-        lastClaimedAt[user] = block.timestamp;
+        // Set lastClaimedAt to the start of the current cycle
+        uint256 cyclesElapsed = (block.timestamp -
+            firstBurnTimestamp[msg.sender]) / 24 hours;
+        lastClaimedAt[user] =
+            firstBurnTimestamp[msg.sender] +
+            cyclesElapsed *
+            24 hours;
+
         stateLpTotalShare -= totalReward;
         (bool success, ) = payable(user).call{value: totalReward}("");
         require(success, "PLS transfer failed");
@@ -484,10 +504,34 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         return (userBurnedAmount[user] * 100 * 1e18) / totalStateBurned / 1e18;
     }
 
+    function getTimeUntilNextClaim(address user) public view returns (uint256) {
+        UserBurn[] memory burns = burnHistory[user];
+        if (burns.length == 0) {
+            return 0; // No burns, no claim possible
+        }
+
+        uint256 timeSinceFirstBurn = block.timestamp -
+            firstBurnTimestamp[msg.sender];
+
+        if (timeSinceFirstBurn < 24 hours) {
+            return 24 hours - timeSinceFirstBurn; // Time until first claim
+        }
+
+        uint256 cyclesElapsed = timeSinceFirstBurn / 24 hours;
+        uint256 nextClaimableAt = firstBurnTimestamp[msg.sender] +
+            (cyclesElapsed + 1) *
+            24 hours;
+
+        // Return the time remaining until the next claim
+        return nextClaimableAt - block.timestamp;
+    }
+
     function getAllUsersBurnedPercentageSum() external view returns (uint256) {
         if (totalStateBurned == 0) return 0;
         return (totalStateBurned * 100 * 1e18) / totalStateBurned / 1e18;
     }
+
     receive() external payable {}
+
     fallback() external payable {}
 }
