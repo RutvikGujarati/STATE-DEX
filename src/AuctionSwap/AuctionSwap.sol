@@ -141,9 +141,11 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
             stateToken
         );
     }
+
     function isTokenSupported(address token) public view returns (bool) {
         return supportedTokens[token];
     }
+
     function getRatioPrice(address inputToken) public view returns (uint256) {
         require(supportedTokens[inputToken], "Unsupported token");
         IPair pair = IPair(pairAddresses[inputToken]);
@@ -194,6 +196,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         emit RewardDistributed(user, reward);
     }
+
     function hasAirdroppedClaim(address user) public view returns (bool) {
         require(user != address(0), "Invalid user address");
 
@@ -344,12 +347,18 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         uint256 timeSinceStart = currentTime - cycle.firstAuctionStart;
         uint256 cycleNumber = timeSinceStart / fullCycleLength;
-
         if (cycleNumber >= MAX_AUCTIONS) return false;
 
-        uint256 currentCyclePosition = timeSinceStart % fullCycleLength;
+        bool isFourthCycle = ((cycleNumber + 1) % 4 == 0);
+        if (isFourthCycle) return false;
 
-        return currentCyclePosition < AUCTION_DURATION;
+        uint256 currentCycleStart = cycle.firstAuctionStart +
+            cycleNumber *
+            fullCycleLength;
+        uint256 auctionEndTime = currentCycleStart + AUCTION_DURATION;
+
+        // Check if in active auction window (same for normal or reverse auction)
+        return currentTime >= currentCycleStart && currentTime < auctionEndTime;
     }
 
     function isReverseAuctionActive(
@@ -365,21 +374,20 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         uint256 timeSinceStart = currentTime - cycle.firstAuctionStart;
         uint256 cycleNumber = timeSinceStart / fullCycleLength;
-
         if (cycleNumber >= MAX_AUCTIONS) return false;
-
-        // Reverse auction only happens on every 4th cycle (1-indexed: 4, 8, 12...)
-        if ((cycleNumber + 1) % 4 != 0) return false;
 
         uint256 currentCycleStart = cycle.firstAuctionStart +
             cycleNumber *
             fullCycleLength;
         uint256 auctionEndTime = currentCycleStart + AUCTION_DURATION;
-        uint256 reverseAuctionEndTime = auctionEndTime + REVERSE_DURATION;
+
+        // Only on every 4th cycle (4,8,12...) we have reverse auction
+        bool isFourthCycle = ((cycleNumber + 1) % 4 == 0);
 
         return
-            currentTime >= auctionEndTime &&
-            currentTime < reverseAuctionEndTime;
+            isFourthCycle &&
+            currentTime >= currentCycleStart &&
+            currentTime < auctionEndTime;
     }
 
     function getCurrentAuctionCycle(
@@ -413,14 +421,15 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         uint256 timeSinceStart = currentTime - cycle.firstAuctionStart;
         uint256 cycleNumber = timeSinceStart / fullCycleLength;
-
-        // Respect max auction limit
         if (cycleNumber >= MAX_AUCTIONS) return 0;
 
-        uint256 currentCyclePosition = timeSinceStart % fullCycleLength;
+        uint256 currentCycleStart = cycle.firstAuctionStart +
+            cycleNumber *
+            fullCycleLength;
+        uint256 auctionEndTime = currentCycleStart + AUCTION_DURATION;
 
-        if (currentCyclePosition < AUCTION_DURATION) {
-            return AUCTION_DURATION - currentCyclePosition;
+        if (currentTime >= currentCycleStart && currentTime < auctionEndTime) {
+            return auctionEndTime - currentTime;
         }
 
         return 0;
