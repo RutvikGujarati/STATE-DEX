@@ -5,7 +5,7 @@ import "forge-std/Script.sol";
 import {Ratio_Swapping_Auctions_V2_1} from "../src/AuctionSwap/AuctionSwap.sol";
 contract AuctionSwapDeploy is Script {
     function run() external {
-        address governance = 0xBAaB2913ec979d9d21785063a0e4141e5B787D28;
+        address governance = 0x3Bdbb84B90aBAf52814aAB54B9622408F2dCA483;
 
         vm.startBroadcast();
 

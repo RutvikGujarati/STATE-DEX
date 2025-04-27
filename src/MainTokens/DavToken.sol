@@ -14,7 +14,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     using SafeERC20 for IERC20;
 
     uint256 public constant MAX_SUPPLY = 5000000 ether; // 5 Million DAV Tokens
-    uint256 public constant TOKEN_COST = 10 ether; // 500000 org
+    uint256 public constant TOKEN_COST = 50 ether; // 500000 org
     uint256 public constant REFERRAL_BONUS = 5; // 5% bonus for referrers
     uint256 public constant LIQUIDITY_SHARE = 30; // 20% LIQUIDITY SHARE
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE
@@ -59,7 +59,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     uint256 public holderFunds; // Tracks ETH allocated for holder rewards
     mapping(address => uint256) public firstBurnTimestamp;
     uint256 public deployTime;
-    uint256 public constant davIncrement = 1;
     uint256 public totalLiquidityAllocated;
     uint256 public totalDevelopmentAllocated;
     uint256 public davHoldersCount;
@@ -67,7 +66,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     bool public transfersPaused = true;
     string public TransactionHash;
     uint256 public constant TREASURY_CLAIM_PERCENTAGE = 10; // 10% of treasury for claims
-    uint256 public constant CLAIM_INTERVAL = 2 minutes; // 1 hour claim timer
+    uint256 public constant CLAIM_INTERVAL = 5 minutes; // 1 hour claim timer
 
     mapping(address => string) public userReferralCode; // User's own referral code
     mapping(string => address) public referralCodeToUser; // Referral code to user address
@@ -80,6 +79,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(address => uint256) public userRewardPerTokenPaid;
     mapping(address => uint256) public userMintedAmount;
     mapping(address => uint256) public lastClaimedAt;
+    mapping(address => uint256) public lastBurnCycle;
 
     event TokensMinted(
         address indexed user,
@@ -409,6 +409,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
     // ------------------ StateLp functions ------------------------------
     function burnState(uint256 amount) external {
+        require(!canClaim(msg.sender), "Claim your PLS before burning");
         require(balanceOf(msg.sender) >= MIN_DAV, "Need at least 10 DAV");
         require(amount > 0, "Burn amount must be > 0");
         require(
@@ -421,7 +422,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         // Calculate user's share at the time of burn
         uint256 userShare = totalStateBurned == 0
-            ? 0
+            ? 1e18
             : (amount * 1e18) / (totalStateBurned + amount);
 
         totalStateBurned += amount;
@@ -437,22 +438,19 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
                 claimed: false
             })
         );
+        lastBurnCycle[msg.sender] =
+            (block.timestamp - deployTime) /
+            CLAIM_INTERVAL;
+
         StateLP.safeTransferFrom(msg.sender, BURN_ADDRESS, amount);
     }
-        function canClaim(address user) public view returns (bool) {
-        UserBurn[] memory burns = burnHistory[user];
-        if (burns.length == 0) return false;
 
-        // Calculate current cycle since deployment
+    function canClaim(address user) public view returns (bool) {
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
-        
-        // Check if there are unclaimed burns where the next cycle has started
-        for (uint256 i = 0; i < burns.length; i++) {
-            if (!burns[i].claimed && burns[i].cycleNumber < currentCycle) {
-                return true;
-            }
-        }
-        return false;
+        if (currentCycle <= lastClaimedCycle[user]) return false;
+        if (lastBurnCycle[user] == currentCycle) return false;
+        uint256 claimable = getClaimablePLS(user);
+        return claimable > 0;
     }
 
     function getClaimablePLS(address user) public view returns (uint256) {
@@ -463,18 +461,24 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         uint256 totalReward = 0;
         uint256 availablePLS = (stateLpTotalShare * TREASURY_CLAIM_PERCENTAGE) /
             100;
+        uint256 maxClaimable = stateLpTotalShare / 10; // 10% of treasury
 
-        // Calculate rewards based on each unclaimed burn's share
         for (uint256 i = 0; i < burns.length; i++) {
             if (!burns[i].claimed && burns[i].cycleNumber <= currentCycle) {
                 totalReward += (availablePLS * burns[i].userShare) / 1e18;
             }
         }
-        return totalReward;
+
+        // Cap the reward at 10% of treasury
+        return totalReward > maxClaimable ? maxClaimable : totalReward;
+    }
+    function getUsableTreasuryPLS() public view returns (uint256) {
+        return (stateLpTotalShare * TREASURY_CLAIM_PERCENTAGE) / 100;
     }
     function claimPLS() external {
         address user = msg.sender;
         require(canClaim(user), "Cannot claim yet");
+
         UserBurn[] storage burns = burnHistory[user];
         require(burns.length > 0, "No burns found");
 
@@ -482,41 +486,40 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         uint256 totalReward = 0;
         uint256 availablePLS = (stateLpTotalShare * TREASURY_CLAIM_PERCENTAGE) /
             100;
+        uint256 maxClaimable = stateLpTotalShare / 10; // 10% of treasury
 
-        // Calculate rewards and mark burns as claimed
         for (uint256 i = 0; i < burns.length; i++) {
             if (!burns[i].claimed && burns[i].cycleNumber <= currentCycle) {
                 totalReward += (availablePLS * burns[i].userShare) / 1e18;
                 burns[i].claimed = true;
             }
         }
+
+        // Cap the reward
+        totalReward = totalReward > maxClaimable ? maxClaimable : totalReward;
         require(totalReward > 0, "Nothing to claim");
 
-        // Update last claimed cycle
         lastClaimedCycle[user] = currentCycle;
         stateLpTotalShare -= totalReward;
 
-        // Clear burn history to start fresh
-        delete burnHistory[user];
-        userBurnedAmount[user] = 0;
-        userBurns[user].totalBurned = 0;
+        // Optional: Keep burnHistory for debugging or future claims
+        // delete burnHistory[user]; // Consider removing this
+        // userBurns[user].totalBurned = 0;
 
         (bool success, ) = payable(user).call{value: totalReward}("");
         require(success, "PLS transfer failed");
     }
 
-    function getTimeUntilNextClaim(address user) public view returns (uint256) {
-        UserBurn[] memory burns = burnHistory[user];
-        if (burns.length == 0) {
-            return 0; // No burns, no claim possible
-        }
-
+    function getTimeUntilNextClaim() public view returns (uint256) {
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
         uint256 nextClaimableAt = deployTime +
             (currentCycle + 1) *
             CLAIM_INTERVAL;
 
-        return nextClaimableAt - block.timestamp;
+        return
+            nextClaimableAt > block.timestamp
+                ? nextClaimableAt - block.timestamp
+                : 0;
     }
 
     function getContractPLSBalance() external view returns (uint256) {
