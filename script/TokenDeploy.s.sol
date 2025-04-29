@@ -7,8 +7,8 @@ import "../src/MainTokens/StateToken.sol";
 contract DeployState is Script {
     function run() external {
         vm.startBroadcast();
-        address Five = 0x3Bdbb84B90aBAf52814aAB54B9622408F2dCA483;
-        address Swap = 0x3Bdbb84B90aBAf52814aAB54B9622408F2dCA483;
+        address Five = 0xBAaB2913ec979d9d21785063a0e4141e5B787D28;
+        address Swap = 0x82dc0C845f26972372e079075f9670CcfD8Df583;
         STATE_Token_V2_1_Ratio_Swapping state = new STATE_Token_V2_1_Ratio_Swapping(
                 "State",
                 "State",
