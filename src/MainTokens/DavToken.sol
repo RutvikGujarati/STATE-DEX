@@ -64,7 +64,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     uint256 public davHoldersCount;
     uint256 public totalRewardPerTokenStored;
     bool public transfersPaused = true;
-    string public TransactionHash;
     uint256 public constant TREASURY_CLAIM_PERCENTAGE = 10; // 10% of treasury for claims
     uint256 public constant CLAIM_INTERVAL = 2 hours; // 4 hour claim timer
 
@@ -81,6 +80,16 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(address => uint256) public lastClaimedAt;
     mapping(address => uint256) public lastBurnCycle;
     mapping(uint256 => uint256) public cycleStateLpShare; // Treasury balance at cycle start
+    // Mapping to track allocated rewards per cycle per user
+    mapping(address => mapping(uint256 => uint256)) public userCycleRewards;
+    // Track allocated treasury per cycle (10% of treasury contributions)
+    mapping(uint256 => uint256) public cycleTreasuryAllocation;
+    // Track unclaimed PLS per cycle
+    mapping(uint256 => uint256) public cycleUnclaimedPLS;
+    // Track whether a cycle's rewards have been redistributed
+    mapping(uint256 => bool) public cycleRedistributed;
+    // Track total burns per cycle for accurate share calculation
+    mapping(uint256 => uint256) public cycleTotalBurned;
 
     event TokensBurned(address indexed user, uint256 amount, uint256 cycle);
     event RewardClaimed(address indexed user, uint256 amount, uint256 cycle);
@@ -304,6 +313,13 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         ) = _calculateETHDistribution(msg.value, msg.sender, referralCode);
         stateLpTotalShare += stateLPShare;
 
+        uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
+        uint256 cycleAllocation = (stateLPShare * TREASURY_CLAIM_PERCENTAGE) /
+            100;
+        for (uint256 i = 0; i < 10; i++) {
+            uint256 targetCycle = currentCycle + i;
+            cycleTreasuryAllocation[targetCycle] += cycleAllocation;
+        }
         // Distribute rewards to holders, excluding governance balance
         if (holderShare > 0 && totalSupply() > balanceOf(governance)) {
             uint256 effectiveSupply = totalSupply() - balanceOf(governance);
@@ -423,18 +439,38 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
 
-        // Update cycleStateLpShare for the current cycle if not set
-        if (cycleStateLpShare[currentCycle] == 0) {
-            cycleStateLpShare[currentCycle] = stateLpTotalShare;
+        // Redistribute unclaimed PLS from past cycles with no burns
+        for (uint256 i = 0; i < currentCycle; i++) {
+            if (
+                cycleTotalBurned[i] == 0 &&
+                !cycleRedistributed[i] &&
+                cycleUnclaimedPLS[i] > 0
+            ) {
+                uint256 unclaimed = cycleUnclaimedPLS[i];
+                uint256 redistributeAmount = unclaimed / 10;
+                for (uint256 j = 0; j < 10; j++) {
+                    cycleTreasuryAllocation[i + 1 + j] += redistributeAmount;
+                }
+                cycleUnclaimedPLS[i] = 0;
+                cycleRedistributed[i] = true;
+            }
         }
 
+        // Update burn amounts before calculating share
         totalStateBurned += amount;
         userBurnedAmount[msg.sender] += amount;
+        cycleTotalBurned[currentCycle] += amount;
 
-        // Calculate userShare at the time of burn for historical reference
+        // Calculate user share for this cycle
         uint256 userShare = totalStateBurned > 0
-            ? (amount * 1e18) / totalStateBurned
-            : 1e18;
+            ? (userBurnedAmount[msg.sender] * 100 * 1e18) / totalStateBurned
+            : 100 * 1e18; // 100% if first burner
+
+        // Allocate reward for the current cycle
+        uint256 cycleAllocation = cycleTreasuryAllocation[currentCycle];
+        uint256 reward = (cycleAllocation * userShare) / (100 * 1e18);
+        userCycleRewards[msg.sender][currentCycle] += reward;
+        cycleUnclaimedPLS[currentCycle] += reward;
 
         burnHistory[msg.sender].push(
             UserBurn({
@@ -455,108 +491,129 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
     function canClaim(address user) public view returns (bool) {
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
-        if (currentCycle <= lastClaimedCycle[user]) return false;
-        if (lastBurnCycle[user] == currentCycle) return false;
-        uint256 claimable = getClaimablePLS(user);
-        return claimable > 0;
+        // Check if user has burned in any past cycle
+        bool hasBurned = false;
+        for (uint256 i = 0; i < burnHistory[user].length; i++) {
+            if (burnHistory[user][i].cycleNumber < currentCycle) {
+                hasBurned = true;
+                break;
+            }
+        }
+        if (!hasBurned) return false;
+
+        // Check if user has any unclaimed rewards in past cycles
+        for (uint256 i = 0; i < currentCycle; i++) {
+            if (userCycleRewards[user][i] > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+    function getClaimablePLS(address user) public view returns (uint256) {
+        uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
+        uint256 totalClaimable = 0;
+
+        // Check burn history for each cycle
+        for (uint256 i = 0; i <= currentCycle; i++) {
+            bool hasBurnedInCycle = false;
+            for (uint256 j = 0; j < burnHistory[user].length; j++) {
+                if (
+                    burnHistory[user][j].cycleNumber == i &&
+                    !burnHistory[user][j].claimed
+                ) {
+                    hasBurnedInCycle = true;
+                    break;
+                }
+            }
+
+            if (hasBurnedInCycle && totalStateBurned > 0) {
+                uint256 userShare = (userBurnedAmount[user] * 100 * 1e18) /
+                    totalStateBurned;
+                uint256 cycleAllocation = cycleTreasuryAllocation[i];
+                totalClaimable += (cycleAllocation * userShare) / (100 * 1e18);
+            }
+        }
+
+        return totalClaimable;
+    }
+    function getCurrentCycle() public view returns (uint256) {
+        return (block.timestamp - deployTime) / CLAIM_INTERVAL;
     }
     function getUsableTreasuryPLS() public view returns (uint256) {
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
-        uint256 cycleShare = cycleStateLpShare[currentCycle];
-        if (cycleShare == 0) {
-            cycleShare = stateLpTotalShare; // Use current treasury for unset cycle
-        }
-        return (cycleShare * TREASURY_CLAIM_PERCENTAGE) / 100;
+        return cycleTreasuryAllocation[currentCycle];
     }
-
-    function getClaimablePLS(address user) public view returns (uint256) {
-        UserBurn[] memory burns = burnHistory[user];
-        if (burns.length == 0 || totalStateBurned == 0) return 0;
-
-        uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
-        uint256 totalReward = 0;
-
-        // Get current cycle's maxClaimable for capping
-        uint256 cycleShare = cycleStateLpShare[currentCycle];
-        if (cycleShare == 0) {
-            cycleShare = stateLpTotalShare; // Use current treasury for unset cycle
-        }
-        uint256 maxCycleReward = cycleShare / 10; // 10% of treasury for current cycle
-
-        for (uint256 i = 0; i < burns.length; i++) {
-            if (!burns[i].claimed && burns[i].cycleNumber <= currentCycle) {
-                // Use cycle-specific stateLpTotalShare or current stateLpTotalShare
-                uint256 burnCycleShare = cycleStateLpShare[
-                    burns[i].cycleNumber
-                ];
-                if (burnCycleShare == 0) {
-                    burnCycleShare = stateLpTotalShare; // Use current treasury for unset cycles
-                }
-                uint256 availablePLS = (burnCycleShare *
-                    TREASURY_CLAIM_PERCENTAGE) / 100;
-                uint256 maxClaimable = burnCycleShare / 10; // 10% of treasury for burn's cycle
-                uint256 userShare = (burns[i].amount * 1e18) / totalStateBurned;
-                uint256 reward = (availablePLS * userShare) / 1e18;
-                totalReward += reward > maxClaimable ? maxClaimable : reward;
-            }
-        }
-
-        // Cap totalReward at current cycle's max reward
-        return totalReward > maxCycleReward ? maxCycleReward : totalReward;
-    }
-
     function claimPLS() external {
         address user = msg.sender;
-        require(canClaim(user), "Cannot claim yet");
-
-        UserBurn[] storage burns = burnHistory[user];
-        require(burns.length > 0, "No burns found");
+        require(canClaim(user), "No rewards to claim");
 
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
-
-        // Set cycleStateLpShare for the current cycle if not already set
-        if (cycleStateLpShare[currentCycle] == 0) {
-            cycleStateLpShare[currentCycle] = stateLpTotalShare;
-        }
-
         uint256 totalReward = 0;
 
-        // Get current cycle's maxClaimable for capping
-        uint256 cycleShare = cycleStateLpShare[currentCycle];
-        uint256 maxCycleReward = cycleShare / 10; // 10% of treasury for current cycle
-
-        for (uint256 i = 0; i < burns.length; i++) {
-            if (!burns[i].claimed && burns[i].cycleNumber <= currentCycle) {
-                // Use cycle-specific stateLpTotalShare or current stateLpTotalShare
-                uint256 burnCycleShare = cycleStateLpShare[
-                    burns[i].cycleNumber
-                ];
-                if (burnCycleShare == 0) {
-                    burnCycleShare = stateLpTotalShare; // Use current treasury for unset cycles
+        // Collect rewards from all past cycles
+        for (uint256 i = 0; i < currentCycle; i++) {
+            bool hasBurnedInCycle = false;
+            for (uint256 j = 0; j < burnHistory[user].length; j++) {
+                if (
+                    burnHistory[user][j].cycleNumber == i &&
+                    !burnHistory[user][j].claimed
+                ) {
+                    hasBurnedInCycle = true;
+                    break;
                 }
-                uint256 availablePLS = (burnCycleShare *
-                    TREASURY_CLAIM_PERCENTAGE) / 100;
-                uint256 maxClaimable = burnCycleShare / 10; // 10% of treasury for burn's cycle
-                uint256 userShare = (burns[i].amount * 1e18) / totalStateBurned;
-                uint256 reward = (availablePLS * userShare) / 1e18;
-                totalReward += reward > maxClaimable ? maxClaimable : reward;
-                burns[i].claimed = true;
+            }
+
+            if (hasBurnedInCycle && totalStateBurned > 0) {
+                uint256 userShare = (userBurnedAmount[user] * 100 * 1e18) /
+                    totalStateBurned;
+                uint256 cycleAllocation = cycleTreasuryAllocation[i];
+                uint256 reward = (cycleAllocation * userShare) / (100 * 1e18);
+                if (reward > 0) {
+                    totalReward += reward;
+                    userCycleRewards[user][i] = 0;
+                    cycleUnclaimedPLS[i] -= reward;
+
+                    // Update burn history
+                    UserBurn[] storage burns = burnHistory[user];
+                    for (uint256 j = 0; j < burns.length; j++) {
+                        if (!burns[j].claimed && burns[j].cycleNumber == i) {
+                            burns[j].claimed = true;
+                        }
+                    }
+                }
             }
         }
 
-        // Cap totalReward at current cycle's max reward
-        totalReward = totalReward > maxCycleReward
-            ? maxCycleReward
-            : totalReward;
         require(totalReward > 0, "Nothing to claim");
 
-        lastClaimedCycle[user] = currentCycle;
+        lastClaimedCycle[user] = currentCycle - 1;
 
-        // Transfer reward from contract balance
+        // Transfer reward without affecting main treasury
         (bool success, ) = payable(user).call{value: totalReward}("");
         require(success, "PLS transfer failed");
 
         emit RewardClaimed(user, totalReward, currentCycle);
+    }
+
+    // Function to redistribute unclaimed PLS from a cycle to the next 10 cycles
+    function redistributeUnclaimedPLS(uint256 cycle) external {
+        require(
+            cycle < (block.timestamp - deployTime) / CLAIM_INTERVAL,
+            "Cycle not ended"
+        );
+        require(!cycleRedistributed[cycle], "Cycle already redistributed");
+
+        uint256 unclaimed = cycleUnclaimedPLS[cycle];
+        if (unclaimed > 0) {
+            // Redistribute to the next 10 cycles
+            uint256 redistributeAmount = unclaimed / 10;
+            uint256 nextCycle = cycle + 1;
+            for (uint256 i = 0; i < 10; i++) {
+                cycleTreasuryAllocation[nextCycle + i] += redistributeAmount;
+            }
+            cycleUnclaimedPLS[cycle] = 0;
+            cycleRedistributed[cycle] = true;
+        }
     }
     function getTimeUntilNextClaim() public view returns (uint256) {
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
