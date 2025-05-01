@@ -11,8 +11,13 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     Ownable(msg.sender),
     ReentrancyGuard
 {
+    // IERC20 initialization
     using SafeERC20 for IERC20;
+    IERC20 public StateLP;
 
+    //Global unit256 Variables
+
+    // DAV TOken
     uint256 public constant MAX_SUPPLY = 5000000 ether; // 5 Million DAV Tokens
     uint256 public constant TOKEN_COST = 100000 ether; // 500000 org
     uint256 public constant REFERRAL_BONUS = 5; // 5% bonus for referrers
@@ -22,12 +27,32 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     // Add this to track total distributed rewards for accounting
     uint256 public totalReferralRewardsDistributed;
     uint256 public unallocatedHolderDust; // Unused fractional dust from reward calc
-    IERC20 public StateLP;
+    uint256 public mintedSupply; // Total Minted DAV Tokens
+    uint256 public liquidityFunds;
+    uint256 public developmentFunds;
+    uint256 public stateLpTotalShare;
+    uint256 public holderFunds; // Tracks ETH allocated for holder rewards
+    uint256 public deployTime;
+    uint256 public totalLiquidityAllocated;
+    uint256 public totalDevelopmentAllocated;
+    uint256 public davHoldersCount;
+    uint256 public totalRewardPerTokenStored;
+
+    //State burn
+    uint256 public totalStateBurned;
+    uint256 public constant TREASURY_CLAIM_PERCENTAGE = 10; // 10% of treasury for claims
+    uint256 public constant CLAIM_INTERVAL = 2 hours; // 4 hour claim timer
+    uint256 public constant MIN_DAV = 1 * 1e18;
+
     address public stateAddress;
     address private constant BURN_ADDRESS =
         0x0000000000000000000000000000000000000369;
     address public governance;
-    uint256 public constant MIN_DAV = 1 * 1e18;
+    address public liquidityWallet;
+    address public developmentWallet;
+    address public stateToken;
+
+    bool public transfersPaused = true;
 
     struct BurnInfo {
         uint256 totalBurned;
@@ -48,29 +73,9 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(address => UserBurn[]) public burnHistory;
     mapping(address => BurnInfo) public userBurns;
     mapping(address => uint256) public lastClaimedCycle;
-    uint256 public totalStateBurned;
-
-    uint256 public mintedSupply; // Total Minted DAV Tokens
-    address public liquidityWallet;
-    address public developmentWallet;
-    uint256 public liquidityFunds;
-    address public stateToken;
-    uint256 public developmentFunds;
-    uint256 public stateLpTotalShare;
-    uint256 public holderFunds; // Tracks ETH allocated for holder rewards
-    mapping(address => uint256) public firstBurnTimestamp;
-    uint256 public deployTime;
-    uint256 public totalLiquidityAllocated;
-    uint256 public totalDevelopmentAllocated;
-    uint256 public davHoldersCount;
-    uint256 public totalRewardPerTokenStored;
-    bool public transfersPaused = true;
-    uint256 public constant TREASURY_CLAIM_PERCENTAGE = 10; // 10% of treasury for claims
-    uint256 public constant CLAIM_INTERVAL = 2 hours; // 4 hour claim timer
 
     mapping(address => string) public userReferralCode; // User's own referral code
     mapping(string => address) public referralCodeToUser; // Referral code to user address
-    mapping(address => string) public userToReferralCodeUsed; // Tracks which code a user used
     mapping(address => uint256) public referralRewards; // Tracks referral rewards earned
 
     mapping(address => uint256) public lastMintTimestamp;
@@ -78,7 +83,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(address => uint256) public holderRewards;
     mapping(address => uint256) public userRewardPerTokenPaid;
     mapping(address => uint256) public userMintedAmount;
-    mapping(address => uint256) public lastClaimedAt;
     mapping(address => uint256) public lastBurnCycle;
     mapping(uint256 => uint256) public cycleStateLpShare; // Treasury balance at cycle start
     // Mapping to track allocated rewards per cycle per user
@@ -92,6 +96,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     // Track total burns per cycle for accurate share calculation
     mapping(uint256 => uint256) public cycleTotalBurned;
 
+    mapping(address => string) public usersTokenNames;
     event TokensBurned(address indexed user, uint256 amount, uint256 cycle);
     event RewardClaimed(address indexed user, uint256 amount, uint256 cycle);
 
@@ -111,6 +116,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     );
     event ReferralCodeGenerated(address indexed user, string referralCode);
     event StuckETHWithdrawn(address indexed owner, uint256 amount);
+
+    event TokenNameAdded(address indexed user, string name);
 
     constructor(
         address _liquidityWallet,
@@ -428,6 +435,25 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         return userReferralCode[user];
     }
 
+    // ------------------ Gettting Token info functions ------------------------------
+    function ProcessYourToken(string memory _tokenName) public payable {
+        require(bytes(_tokenName).length > 0, "Please provide tokenName");
+        require(
+            bytes(_tokenName).length <= 10,
+            "Token name must be 10 characters or fewer"
+        );
+        require(msg.value == 10000000 ether, "please give 1 million PLS");
+
+        usersTokenNames[msg.sender] = _tokenName;
+
+        (bool success, ) = payable(governance).call{value: msg.value}("");
+        require(success, "PLS transfer failed");
+        emit TokenNameAdded(msg.sender, _tokenName);
+    }
+
+    function getTokenNamesofusers() public view returns (string memory) {
+        return usersTokenNames[msg.sender];
+    }
     // ------------------ StateLp functions ------------------------------
 
     function burnState(uint256 amount) external {
@@ -600,11 +626,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     ) external view returns (uint256) {
         if (totalStateBurned == 0) return 0;
         return (userBurnedAmount[user] * 100 * 1e18) / totalStateBurned / 1e18;
-    }
-
-    function getAllUsersBurnedPercentageSum() external view returns (uint256) {
-        if (totalStateBurned == 0) return 0;
-        return (totalStateBurned * 100 * 1e18) / totalStateBurned / 1e18;
     }
 
     receive() external payable {}
