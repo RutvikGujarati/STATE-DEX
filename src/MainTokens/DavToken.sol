@@ -19,7 +19,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
     // DAV TOken
     uint256 public constant MAX_SUPPLY = 5000000 ether; // 5 Million DAV Tokens
-    uint256 public constant TOKEN_COST = 100000 ether; // 500000 org
+    uint256 public constant TOKEN_COST = 10000 ether; // 500000 org
     uint256 public constant REFERRAL_BONUS = 5; // 5% bonus for referrers
     uint256 public constant LIQUIDITY_SHARE = 30; // 20% LIQUIDITY SHARE
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE
@@ -66,6 +66,12 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         uint256 userShare; // User's share percentage at burn time (scaled by 1e18)
         bool claimed; // Tracks if this burn's reward has been claimed
     }
+    struct TokenEntry {
+        address user;
+        string tokenName;
+    }
+
+    TokenEntry[] public allTokenEntries;
 
     mapping(address => uint256) public userBurnedAmount;
     mapping(address => mapping(uint256 => bool)) public hasClaimedCycle;
@@ -96,7 +102,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     // Track total burns per cycle for accurate share calculation
     mapping(uint256 => uint256) public cycleTotalBurned;
 
-    mapping(address => string) public usersTokenNames;
+    mapping(address => string[]) public usersTokenNames;
     event TokensBurned(address indexed user, uint256 amount, uint256 cycle);
     event RewardClaimed(address indexed user, uint256 amount, uint256 cycle);
 
@@ -327,6 +333,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         for (uint256 i = 0; i < 10; i++) {
             uint256 targetCycle = currentCycle + i;
             cycleTreasuryAllocation[targetCycle] += cycleAllocation;
+            cycleUnclaimedPLS[targetCycle] += cycleAllocation;
         }
         // Distribute rewards to holders, excluding governance balance
         if (holderShare > 0 && totalSupply() > balanceOf(governance)) {
@@ -442,18 +449,36 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             bytes(_tokenName).length <= 10,
             "Token name must be 10 characters or fewer"
         );
-        require(msg.value == 10000000 ether, "please give 1 million PLS");
 
-        usersTokenNames[msg.sender] = _tokenName;
+        if (msg.sender != governance) {
+            require(msg.value == 100000 ether, "Please give 100000 PLS");
 
-        (bool success, ) = payable(governance).call{value: msg.value}("");
-        require(success, "PLS transfer failed");
+            // Allocate all funds to State LP cycle like mintDAV
+            uint256 stateLPShare = msg.value;
+            stateLpTotalShare += stateLPShare;
+
+            uint256 currentCycle = (block.timestamp - deployTime) /
+                CLAIM_INTERVAL;
+            uint256 cycleAllocation = (stateLPShare *
+                TREASURY_CLAIM_PERCENTAGE) / 100;
+
+            for (uint256 i = 0; i < 10; i++) {
+                uint256 targetCycle = currentCycle + i;
+                cycleTreasuryAllocation[targetCycle] += cycleAllocation;
+                cycleUnclaimedPLS[targetCycle] += cycleAllocation;
+            }
+        }
+
+        usersTokenNames[msg.sender].push(_tokenName);
+        allTokenEntries.push(TokenEntry(msg.sender, _tokenName));
+
         emit TokenNameAdded(msg.sender, _tokenName);
     }
 
-    function getTokenNamesofusers() public view returns (string memory) {
-        return usersTokenNames[msg.sender];
+    function getAllTokenEntries() public view returns (TokenEntry[] memory) {
+        return allTokenEntries;
     }
+
     // ------------------ StateLp functions ------------------------------
 
     function burnState(uint256 amount) external {
@@ -478,9 +503,9 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         // Allocate reward for the current cycle
         uint256 cycleAllocation = cycleTreasuryAllocation[currentCycle];
+
         uint256 reward = (cycleAllocation * userShare) / (100 * 1e18);
         userCycleRewards[msg.sender][currentCycle] += reward;
-        cycleUnclaimedPLS[currentCycle] += reward;
 
         burnHistory[msg.sender].push(
             UserBurn({
@@ -538,12 +563,11 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         uint256 totalClaimable = 0;
 
         for (uint256 i = 0; i < currentCycle; i++) {
-            // Skip if treasury not allocated or already claimed
+            // Only include past cycles (exclude current)
             if (cycleTreasuryAllocation[i] == 0 || hasClaimedCycle[user][i]) {
                 continue;
             }
 
-            // Calculate user share and reward
             uint256 userShare = (userBurnedAmount[user] * 1e18) /
                 totalStateBurned;
             uint256 reward = (cycleTreasuryAllocation[i] * userShare) / 1e18;
@@ -553,6 +577,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         return totalClaimable;
     }
+
     function claimPLS() external {
         address user = msg.sender;
         require(userBurnedAmount[user] > 0, "No burned tokens");
@@ -600,9 +625,19 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     function getCurrentCycle() public view returns (uint256) {
         return (block.timestamp - deployTime) / CLAIM_INTERVAL;
     }
-    function getUsableTreasuryPLS() public view returns (uint256) {
+    function getAvailableCycleFunds() public view returns (uint256) {
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
-        return cycleTreasuryAllocation[currentCycle];
+        require(currentCycle > 0, "No previous cycle exists");
+
+        uint256 previousCycle = currentCycle - 1;
+
+        // Use cycleUnclaimedPLS for unclaimed funds, assuming it's properly initialized
+        uint256 unclaimed = cycleUnclaimedPLS[previousCycle];
+        // Cross-check with cycleUnclaimedPLS to ensure correctness
+        return
+            unclaimed <= cycleUnclaimedPLS[previousCycle]
+                ? unclaimed
+                : cycleUnclaimedPLS[previousCycle];
     }
 
     function getTimeUntilNextClaim() public view returns (uint256) {
@@ -618,7 +653,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     }
 
     function getContractPLSBalance() external view returns (uint256) {
-        return stateLpTotalShare;
+        return address(this).balance - holderFunds;
     }
 
     function getUserSharePercentage(

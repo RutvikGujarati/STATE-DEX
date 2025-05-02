@@ -24,4 +24,3 @@ contract STATE_Token_V2_1_Ratio_Swapping is ERC20, Ownable(msg.sender) {
         _mint(_swap, ninetyFivePercent);
     }
 }
-x

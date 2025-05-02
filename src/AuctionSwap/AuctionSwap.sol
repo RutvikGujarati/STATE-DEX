@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
@@ -16,7 +17,24 @@ interface IPair {
 
     function token1() external view returns (address);
 }
+contract UserToken is ERC20, Ownable(msg.sender) {
+    uint256 public constant MAX_SUPPLY = 500000000000 ether; // 500 billion
 
+    constructor(
+        string memory name,
+        string memory symbol,
+        address _One,
+        address _swap
+    ) ERC20(name, symbol) {
+        require(_One != address(0) && _swap != address(0), "Invalid address");
+
+        uint256 onePercent = (MAX_SUPPLY * 1) / 100;
+        uint256 ninetyNinePercent = MAX_SUPPLY - onePercent;
+
+        _mint(_One, onePercent);
+        _mint(_swap, ninetyNinePercent);
+    }
+}
 contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     using SafeERC20 for IERC20;
     IERC20 public dav;
@@ -29,11 +47,18 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     mapping(address => uint256) public lastDavHolding;
     mapping(address => uint256) public cumulativeMintableHoldings;
     mapping(address => uint256) public cumulativeDavHoldings;
+    // Map user => array of deployed token names
+    mapping(address => string[]) public userToTokenNames;
+
+    // Map user + token name => token address
+    mapping(address => mapping(string => address)) public deployedTokensByUser;
     uint256 public totalAirdropMinted;
     uint256 public constant AUCTION_INTERVAL = 1 hours;
     uint256 public constant AUCTION_DURATION = 1 hours;
     uint256 public constant REVERSE_DURATION = 1 hours;
     uint256 public constant MAX_AUCTIONS = 20;
+    uint256 public constant OWNER_REWARD_AMOUNT = 2500000 * 1e18;
+    uint256 public constant CLAIM_INTERVAL = 1 hours;
     uint256 public constant MAX_SUPPLY = 500000000000 ether;
     uint256 public constant TIMEZONE_OFFSET = 19800; // GMT+5:30 in seconds (5.5 hours * 3600)
     uint256 public percentage = 1;
@@ -44,6 +69,11 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     address public governanceAddress;
     mapping(address => address) public pairAddresses; // token => pair address
     mapping(address => bool) public supportedTokens; // token => isSupported
+    mapping(address => address) public tokenOwners; // token => owner
+    mapping(address => address[]) public ownerToTokens;
+    mapping(string => bool) public isTokenNameUsed;
+
+    mapping(address => mapping(address => uint256)) public lastClaimTime;
 
     modifier onlyGovernance() {
         require(
@@ -52,7 +82,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         );
         _;
     }
-
+    event TokenDeployed(string name, address tokenAddress);
     uint256 public TotalBurnedStates;
 
     struct AuctionCycle {
@@ -82,6 +112,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         address inputToken,
         address stateToken
     );
+    event TokenDeployed(address tokenAddress);
     event TokensDeposited(address indexed token, uint256 amount);
     event RewardDistributed(address indexed user, uint256 amount);
     event TokensSwapped(
@@ -108,17 +139,50 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         stateToken = state;
     }
 
+    function deployUserToken(
+        string memory name,
+        string memory symbol,
+        address _One,
+        address _swap
+    ) external onlyGovernance returns (address) {
+        require(!isTokenNameUsed[name], "Token name already used");
+        require(
+            deployedTokensByUser[msg.sender][name] == address(0),
+            "Token address should not zero"
+        );
+
+        UserToken token = new UserToken(name, symbol, _One, _swap);
+        deployedTokensByUser[msg.sender][name] = address(token);
+        userToTokenNames[msg.sender].push(name);
+
+        emit TokenDeployed(name, address(token));
+        return address(token);
+    }
+
+    // Getter for deployed token by name
+    function getUserTokenNames() external view returns (string[] memory) {
+        return userToTokenNames[governanceAddress];
+    }
+
+    function getUserTokenAddress(
+        string memory name
+    ) external view returns (address) {
+        return deployedTokensByUser[governanceAddress][name];
+    }
+
     function addToken(
         address token,
-        address pairAddress
+        address pairAddress,
+        address _tokenOwner
     ) external onlyGovernance {
         require(token != address(0), "Invalid token address");
         require(pairAddress != address(0), "Invalid pair address");
         require(!supportedTokens[token], "Token already added");
 
         supportedTokens[token] = true;
+        tokenOwners[token] = _tokenOwner;
         pairAddresses[token] = pairAddress;
-
+        ownerToTokens[_tokenOwner].push(token);
         // Schedule first auction at 18:30 IST (GMT+5:30)
         uint256 auctionStart = block.timestamp;
 
@@ -195,6 +259,78 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         IERC20(inputToken).safeTransfer(msg.sender, reward);
 
         emit RewardDistributed(user, reward);
+    }
+    function getTokenOwner(address token) public view returns (address) {
+        return tokenOwners[token];
+    }
+    function getTokensByOwner(
+        address _owner
+    ) public view returns (address[] memory) {
+        return ownerToTokens[_owner];
+    }
+
+    function giveRewardToTokenOwner(address token) public nonReentrant {
+        // Check if the token has a registered owner
+        address owner = tokenOwners[token];
+        require(owner != address(0), "Token has no registered owner");
+
+        // Determine claimant and reward amount
+        address claimant;
+        uint256 rewardAmount;
+
+        if (msg.sender == governanceAddress) {
+            claimant = governanceAddress;
+            rewardAmount = 500000 * 1e18;
+        } else {
+            require(
+                msg.sender == owner,
+                "Only token owner or governance can claim"
+            );
+            require(
+                dav.balanceOf(owner) >= 1e18,
+                "Owner must hold at least 1 DAV"
+            );
+            claimant = owner;
+            rewardAmount = 2500000 * 1e18;
+        }
+
+        // Enforce claim interval
+        uint256 lastClaim = lastClaimTime[claimant][token];
+        require(
+            block.timestamp >= lastClaim + CLAIM_INTERVAL,
+            "Claim not available yet"
+        );
+
+        // Update last claim time for the claimant
+        lastClaimTime[claimant][token] = block.timestamp;
+
+        // Transfer reward tokens to claimant
+        require(
+            IERC20(token).transfer(claimant, rewardAmount),
+            "Reward transfer failed"
+        );
+
+        // Emit event for reward distribution
+        emit RewardDistributed(claimant, rewardAmount);
+    }
+
+    function getNextClaimTime(
+        address token
+    ) public view returns (uint256 timeLeftInSeconds) {
+        address owner = tokenOwners[token];
+        require(owner != address(0), "Token has no registered owner");
+
+        address claimant = msg.sender == governanceAddress
+            ? governanceAddress
+            : owner;
+
+        uint256 lastClaim = lastClaimTime[claimant][token];
+
+        if (block.timestamp >= lastClaim + CLAIM_INTERVAL) {
+            return 0;
+        } else {
+            return (lastClaim + CLAIM_INTERVAL) - block.timestamp;
+        }
     }
 
     function hasAirdroppedClaim(address user) public view returns (bool) {
