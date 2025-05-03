@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Decentralized_Autonomous_Vaults_DAV_V2_1} from "../MainTokens/DavToken.sol";
 
 interface IPair {
     function getReserves()
@@ -17,15 +18,16 @@ interface IPair {
 
     function token1() external view returns (address);
 }
-contract UserToken is ERC20, Ownable(msg.sender) {
+contract UserToken is ERC20, Ownable {
     uint256 public constant MAX_SUPPLY = 500000000000 ether; // 500 billion
 
     constructor(
         string memory name,
         string memory symbol,
         address _One,
-        address _swap
-    ) ERC20(name, symbol) {
+        address _swap,
+        address _owner
+    ) ERC20(name, symbol) Ownable(_owner) {
         require(_One != address(0) && _swap != address(0), "Invalid address");
 
         uint256 onePercent = (MAX_SUPPLY * 1) / 100;
@@ -35,18 +37,19 @@ contract UserToken is ERC20, Ownable(msg.sender) {
         _mint(_swap, ninetyNinePercent);
     }
 }
+
 contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     using SafeERC20 for IERC20;
-    IERC20 public dav;
+    Decentralized_Autonomous_Vaults_DAV_V2_1 public dav;
 
     //For Airdrop
     uint256 private constant PRECISION = 1e18;
     uint256 public totalRewardDistributed;
     mapping(address => uint256) public userBaseReward;
     mapping(address => uint256) public lastDavMintTime;
-    mapping(address => uint256) public lastDavHolding;
-    mapping(address => uint256) public cumulativeMintableHoldings;
-    mapping(address => uint256) public cumulativeDavHoldings;
+    mapping(address => mapping(address => uint256)) public lastDavHolding; // user => token => last DAV holding    mapping(address => uint256) public cumulativeMintableHoldings;
+    mapping(address => mapping(address => uint256))
+        public cumulativeDavHoldings;
     // Map user => array of deployed token names
     mapping(address => string[]) public userToTokenNames;
 
@@ -74,6 +77,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     mapping(string => bool) public isTokenNameUsed;
 
     mapping(address => mapping(address => uint256)) public lastClaimTime;
+    mapping(string => string) public tokenNameToEmoji;
 
     modifier onlyGovernance() {
         require(
@@ -104,8 +108,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     mapping(address => uint256) public TotalStateBurnedByUser;
     mapping(address => uint256) public TotalTokensBurned;
     mapping(address => uint256) private lastGovernanceUpdate;
-    mapping(address => bool) public hasClaimed;
-
+    mapping(address => mapping(address => bool)) public hasClaimed; // user => token => has claimed
     event AuctionStarted(
         uint256 startTime,
         uint256 endTime,
@@ -135,25 +138,29 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         require(_dav != address(0), "Invalid dav address");
         supportedTokens[state] = true;
         supportedTokens[_dav] = true;
-        dav = IERC20(payable(_dav));
+        dav = Decentralized_Autonomous_Vaults_DAV_V2_1(payable(_dav));
         stateToken = state;
     }
 
     function deployUserToken(
         string memory name,
         string memory symbol,
+        string memory emojies,
         address _One,
-        address _swap
+        address _swap,
+        address _owner
     ) external onlyGovernance returns (address) {
         require(!isTokenNameUsed[name], "Token name already used");
         require(
             deployedTokensByUser[msg.sender][name] == address(0),
-            "Token address should not zero"
+            "Token address should not be zero"
         );
 
-        UserToken token = new UserToken(name, symbol, _One, _swap);
+        UserToken token = new UserToken(name, symbol, _One, _swap, _owner);
         deployedTokensByUser[msg.sender][name] = address(token);
         userToTokenNames[msg.sender].push(name);
+        isTokenNameUsed[name] = true;
+        tokenNameToEmoji[name] = emojies;
 
         emit TokenDeployed(name, address(token));
         return address(token);
@@ -162,6 +169,12 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     // Getter for deployed token by name
     function getUserTokenNames() external view returns (string[] memory) {
         return userToTokenNames[governanceAddress];
+    }
+    function getEmojiByTokenName(
+        string memory _tokenName
+    ) public view returns (string memory) {
+        require(isTokenNameUsed[_tokenName], "Token name not found");
+        return tokenNameToEmoji[_tokenName];
     }
 
     function getUserTokenAddress(
@@ -173,7 +186,8 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     function addToken(
         address token,
         address pairAddress,
-        address _tokenOwner
+        address _tokenOwner,
+        string memory _tokenName
     ) external onlyGovernance {
         require(token != address(0), "Invalid token address");
         require(pairAddress != address(0), "Invalid pair address");
@@ -196,7 +210,12 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
             isInitialized: true,
             auctionCount: 0
         });
-
+        dav.updateTokenStatus(
+            _tokenOwner,
+            governanceAddress,
+            _tokenName,
+            Decentralized_Autonomous_Vaults_DAV_V2_1.TokenStatus.Processed
+        );
         emit TokenAdded(token, pairAddress);
         emit AuctionStarted(
             auctionStart,
@@ -204,6 +223,11 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
             token,
             stateToken
         );
+    }
+    function isTokenRenounced(
+        address tokenAddress
+    ) external view returns (bool) {
+        return Ownable(tokenAddress).owner() == address(0);
     }
 
     function isTokenSupported(address token) public view returns (bool) {
@@ -242,20 +266,22 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         require(user != address(0), "Invalid user address");
         require(supportedTokens[inputToken], "Unsupported token");
         require(msg.sender == user, "Invalid sender");
+
         uint256 currentDavHolding = dav.balanceOf(user);
-        uint256 lastHolding = lastDavHolding[user];
+        uint256 lastHolding = lastDavHolding[user][inputToken];
         uint256 newDavContributed = currentDavHolding > lastHolding
             ? currentDavHolding - lastHolding
             : 0;
-        require(newDavContributed > 0, "No new DAV holdings");
+        require(newDavContributed > 0, "No new DAV holdings for this token");
 
         // **Effects**
         uint256 reward = (newDavContributed * 10000 ether) / 1e18;
 
-        cumulativeDavHoldings[user] += newDavContributed;
-        lastDavHolding[user] = currentDavHolding;
-        hasClaimed[user] = true;
+        cumulativeDavHoldings[user][inputToken] += newDavContributed;
+        lastDavHolding[user][inputToken] = currentDavHolding;
+        hasClaimed[user][inputToken] = true;
 
+        // **Interactions**
         IERC20(inputToken).safeTransfer(msg.sender, reward);
 
         emit RewardDistributed(user, reward);
@@ -333,14 +359,17 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         }
     }
 
-    function hasAirdroppedClaim(address user) public view returns (bool) {
+    function hasAirdroppedClaim(
+        address user,
+        address inputToken
+    ) public view returns (bool) {
         require(user != address(0), "Invalid user address");
 
         uint256 currentDavHolding = dav.balanceOf(user);
-        uint256 lastHolding = lastDavHolding[user];
+        uint256 lastHolding = lastDavHolding[user][inputToken];
 
         // If user has claimed and no new DAV is added, return true
-        if (hasClaimed[user] && currentDavHolding <= lastHolding) {
+        if (hasClaimed[user][inputToken] && currentDavHolding <= lastHolding) {
             return true;
         }
 
@@ -348,11 +377,14 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         return false;
     }
 
-    function getClaimableReward(address user) public view returns (uint256) {
+    function getClaimableReward(
+        address user,
+        address inputToken
+    ) public view returns (uint256) {
         require(user != address(0), "Invalid user address");
 
         uint256 currentDavHolding = dav.balanceOf(user);
-        uint256 lastHolding = lastDavHolding[user];
+        uint256 lastHolding = lastDavHolding[user][inputToken];
         uint256 newDavContributed = currentDavHolding > lastHolding
             ? currentDavHolding - lastHolding
             : 0;

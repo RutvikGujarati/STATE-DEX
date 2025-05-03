@@ -19,7 +19,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
     // DAV TOken
     uint256 public constant MAX_SUPPLY = 5000000 ether; // 5 Million DAV Tokens
-    uint256 public constant TOKEN_COST = 10000 ether; // 500000 org
+    uint256 public constant TOKEN_COST = 10 ether; // 500000 org
     uint256 public constant REFERRAL_BONUS = 5; // 5% bonus for referrers
     uint256 public constant LIQUIDITY_SHARE = 30; // 20% LIQUIDITY SHARE
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE
@@ -41,7 +41,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     //State burn
     uint256 public totalStateBurned;
     uint256 public constant TREASURY_CLAIM_PERCENTAGE = 10; // 10% of treasury for claims
-    uint256 public constant CLAIM_INTERVAL = 2 hours; // 4 hour claim timer
+    uint256 public constant CLAIM_INTERVAL = 5 minutes; // 4 hour claim timer
     uint256 public constant MIN_DAV = 1 * 1e18;
 
     address public stateAddress;
@@ -66,9 +66,15 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         uint256 userShare; // User's share percentage at burn time (scaled by 1e18)
         bool claimed; // Tracks if this burn's reward has been claimed
     }
+    enum TokenStatus {
+        Pending,
+        Processed
+    }
     struct TokenEntry {
         address user;
         string tokenName;
+        string emoji; // 🆕 Add this field
+        TokenStatus status;
     }
 
     TokenEntry[] public allTokenEntries;
@@ -103,6 +109,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(uint256 => uint256) public cycleTotalBurned;
 
     mapping(address => string[]) public usersTokenNames;
+    mapping(string => bool) public isTokenNameUsed;
+
     event TokensBurned(address indexed user, uint256 amount, uint256 cycle);
     event RewardClaimed(address indexed user, uint256 amount, uint256 cycle);
 
@@ -124,7 +132,11 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     event StuckETHWithdrawn(address indexed owner, uint256 amount);
 
     event TokenNameAdded(address indexed user, string name);
-
+    event TokenStatusUpdated(
+        address indexed owner,
+        string tokenName,
+        TokenStatus status
+    );
     constructor(
         address _liquidityWallet,
         address _developmentWallet,
@@ -443,19 +455,22 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     }
 
     // ------------------ Gettting Token info functions ------------------------------
-    function ProcessYourToken(string memory _tokenName) public payable {
+    function ProcessYourToken(
+        string memory _tokenName,
+        string memory _emoji
+    ) public payable {
         require(bytes(_tokenName).length > 0, "Please provide tokenName");
         require(
             bytes(_tokenName).length <= 10,
             "Token name must be 10 characters or fewer"
         );
+        require(!isTokenNameUsed[_tokenName], "Token name already used");
 
         if (msg.sender != governance) {
-            require(msg.value == 100000 ether, "Please give 100000 PLS");
+            require(msg.value == 1 ether, "Please give 100000 PLS");
 
             // Allocate all funds to State LP cycle like mintDAV
             uint256 stateLPShare = msg.value;
-            stateLpTotalShare += stateLPShare;
 
             uint256 currentCycle = (block.timestamp - deployTime) /
                 CLAIM_INTERVAL;
@@ -470,9 +485,66 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         }
 
         usersTokenNames[msg.sender].push(_tokenName);
-        allTokenEntries.push(TokenEntry(msg.sender, _tokenName));
+        allTokenEntries.push(
+            TokenEntry(msg.sender, _tokenName, _emoji, TokenStatus.Pending)
+        );
 
+        isTokenNameUsed[_tokenName] = true;
         emit TokenNameAdded(msg.sender, _tokenName);
+    }
+    function getPendingTokenNames(
+        address user
+    ) public view returns (string[] memory) {
+        uint256 count = 0;
+
+        // First, count how many pending entries this user has
+        for (uint256 i = 0; i < allTokenEntries.length; i++) {
+            if (
+                allTokenEntries[i].user == user &&
+                allTokenEntries[i].status == TokenStatus.Pending
+            ) {
+                count++;
+            }
+        }
+
+        // Create an array with the right size
+        string[] memory pendingNames = new string[](count);
+        uint256 index = 0;
+
+        // Populate the result array
+        for (uint256 i = 0; i < allTokenEntries.length; i++) {
+            if (
+                allTokenEntries[i].user == user &&
+                allTokenEntries[i].status == TokenStatus.Pending
+            ) {
+                pendingNames[index] = allTokenEntries[i].tokenName;
+                index++;
+            }
+        }
+
+        return pendingNames;
+    }
+
+    function updateTokenStatus(
+        address _owner,
+        address _gov,
+        string memory _tokenName,
+        TokenStatus _status
+    ) external {
+        require(_gov == governance, "Only governance can update status");
+
+        // Find and update the token entry
+        for (uint256 i = 0; i < allTokenEntries.length; i++) {
+            if (
+                allTokenEntries[i].user == _owner &&
+                keccak256(bytes(allTokenEntries[i].tokenName)) ==
+                keccak256(bytes(_tokenName))
+            ) {
+                allTokenEntries[i].status = _status;
+                emit TokenStatusUpdated(_owner, _tokenName, _status);
+                break;
+            }
+        }
     }
 
     function getAllTokenEntries() public view returns (TokenEntry[] memory) {
