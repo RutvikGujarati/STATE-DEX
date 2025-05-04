@@ -160,7 +160,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         _transferOwnership(msg.sender);
         deployTime = block.timestamp;
     }
-
+    // Restriction of transffering
     modifier whenTransfersAllowed() {
         require(
             !transfersPaused || msg.sender == governance,
@@ -198,7 +198,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         }
         return success;
     }
-
+    // assign reffer to direct sended user
     function _assignReferralCodeIfNeeded(address user) internal {
         if (bytes(userReferralCode[user]).length == 0) {
             string memory code = _generateReferralCode(user);
@@ -206,10 +206,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             referralCodeToUser[code] = user;
             emit ReferralCodeGenerated(user, code);
         }
-    }
-
-    function viewLastMintTimeStamp(address user) public view returns (uint256) {
-        return lastMintTimestamp[user];
     }
 
     function _updateRewards(address account) internal {
@@ -454,7 +450,11 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         return userReferralCode[user];
     }
 
-    // ------------------ Gettting Token info functions ------------------------------
+    function viewLastMintTimeStamp(address user) public view returns (uint256) {
+        return lastMintTimestamp[user];
+    }
+
+    // ------------------ Gettting Token data info functions ------------------------------
     function ProcessYourToken(
         string memory _tokenName,
         string memory _emoji

@@ -42,53 +42,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     using SafeERC20 for IERC20;
     Decentralized_Autonomous_Vaults_DAV_V2_1 public dav;
 
-    //For Airdrop
-    uint256 private constant PRECISION = 1e18;
-    uint256 public totalRewardDistributed;
-    mapping(address => uint256) public userBaseReward;
-    mapping(address => uint256) public lastDavMintTime;
-    mapping(address => mapping(address => uint256)) public lastDavHolding; // user => token => last DAV holding    mapping(address => uint256) public cumulativeMintableHoldings;
-    mapping(address => mapping(address => uint256))
-        public cumulativeDavHoldings;
-    // Map user => array of deployed token names
-    mapping(address => string[]) public userToTokenNames;
-
-    // Map user + token name => token address
-    mapping(address => mapping(string => address)) public deployedTokensByUser;
-    uint256 public totalAirdropMinted;
-    uint256 public constant AUCTION_INTERVAL = 1 hours;
-    uint256 public constant AUCTION_DURATION = 1 hours;
-    uint256 public constant REVERSE_DURATION = 1 hours;
-    uint256 public constant MAX_AUCTIONS = 20;
-    uint256 public constant OWNER_REWARD_AMOUNT = 2500000 * 1e18;
-    uint256 public constant CLAIM_INTERVAL = 1 hours;
-    uint256 public constant MAX_SUPPLY = 500000000000 ether;
-    uint256 public constant TIMEZONE_OFFSET = 19800; // GMT+5:30 in seconds (5.5 hours * 3600)
-    uint256 public percentage = 1;
-    address private constant BURN_ADDRESS =
-        0x0000000000000000000000000000000000000369;
-
-    address public stateToken;
-    address public governanceAddress;
-    mapping(address => address) public pairAddresses; // token => pair address
-    mapping(address => bool) public supportedTokens; // token => isSupported
-    mapping(address => address) public tokenOwners; // token => owner
-    mapping(address => address[]) public ownerToTokens;
-    mapping(string => bool) public isTokenNameUsed;
-
-    mapping(address => mapping(address => uint256)) public lastClaimTime;
-    mapping(string => string) public tokenNameToEmoji;
-
-    modifier onlyGovernance() {
-        require(
-            msg.sender == governanceAddress,
-            "Swapping: You are not authorized to perform this action"
-        );
-        _;
-    }
-    event TokenDeployed(string name, address tokenAddress);
-    uint256 public TotalBurnedStates;
-
     struct AuctionCycle {
         uint256 firstAuctionStart;
         bool isInitialized;
@@ -101,6 +54,48 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         uint256 cycle;
     }
 
+    //For Airdrop
+    uint256 private constant PRECISION = 1e18;
+    uint256 public totalRewardDistributed;
+    uint256 public totalAirdropMinted;
+    uint256 public constant AUCTION_INTERVAL = 1 hours;
+    uint256 public constant AUCTION_DURATION = 1 hours;
+    uint256 public constant REVERSE_DURATION = 1 hours;
+    uint256 public constant MAX_AUCTIONS = 20;
+    uint256 public constant OWNER_REWARD_AMOUNT = 2500000 * 1e18;
+    uint256 public constant CLAIM_INTERVAL = 1 hours;
+    uint256 public constant MAX_SUPPLY = 500000000000 ether;
+    uint256 public constant TIMEZONE_OFFSET = 19800; // GMT+5:30 in seconds (5.5 hours * 3600)
+    uint256 public percentage = 1;
+    address private constant BURN_ADDRESS =
+        0x0000000000000000000000000000000000000369;
+    uint256 public TotalBurnedStates;
+
+    address public stateToken;
+    address public governanceAddress;
+
+    mapping(address => uint256) public userBaseReward;
+    mapping(address => uint256) public lastDavMintTime;
+    mapping(address => mapping(address => uint256)) public lastDavHolding; // user => token => last DAV holding
+    mapping(address => mapping(address => uint256))
+        public cumulativeDavHoldings;
+    // Map user => array of deployed token names
+    mapping(address => string[]) public userToTokenNames;
+
+    // Map user + token name => token address
+    mapping(address => mapping(string => address)) public deployedTokensByUser;
+
+    mapping(address => address) public pairAddresses; // token => pair address
+    mapping(address => bool) public supportedTokens; // token => isSupported
+    mapping(address => address) public tokenOwners; // token => owner
+    mapping(address => address[]) public ownerToTokens;
+    mapping(string => bool) public isTokenNameUsed;
+
+    mapping(address => mapping(address => uint256)) public lastClaimTime;
+    mapping(string => string) public tokenNameToEmoji;
+
+    event TokenDeployed(string name, address tokenAddress);
+
     mapping(address => mapping(address => bool)) public approvals; // user => spender => approved
     mapping(address => mapping(address => mapping(address => mapping(uint256 => UserSwapInfo))))
         public userSwapTotalInfo; // user => inputToken => stateToken => cycle => UserSwapInfo
@@ -109,6 +104,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     mapping(address => uint256) public TotalTokensBurned;
     mapping(address => uint256) private lastGovernanceUpdate;
     mapping(address => mapping(address => bool)) public hasClaimed; // user => token => has claimed
+
     event AuctionStarted(
         uint256 startTime,
         uint256 endTime,
@@ -127,21 +123,18 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     );
     event TokenAdded(address indexed token, address pairAddress);
 
+    modifier onlyGovernance() {
+        require(
+            msg.sender == governanceAddress,
+            "Swapping: You are not authorized to perform this action"
+        );
+        _;
+    }
     constructor(address _gov) {
         governanceAddress = _gov;
     }
 
-    function setTokenAddress(
-        address state,
-        address _dav
-    ) external onlyGovernance {
-        require(_dav != address(0), "Invalid dav address");
-        supportedTokens[state] = true;
-        supportedTokens[_dav] = true;
-        dav = Decentralized_Autonomous_Vaults_DAV_V2_1(payable(_dav));
-        stateToken = state;
-    }
-
+    // Deploy a Token
     function deployUserToken(
         string memory name,
         string memory symbol,
@@ -165,24 +158,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         emit TokenDeployed(name, address(token));
         return address(token);
     }
-
-    // Getter for deployed token by name
-    function getUserTokenNames() external view returns (string[] memory) {
-        return userToTokenNames[governanceAddress];
-    }
-    function getEmojiByTokenName(
-        string memory _tokenName
-    ) public view returns (string memory) {
-        require(isTokenNameUsed[_tokenName], "Token name not found");
-        return tokenNameToEmoji[_tokenName];
-    }
-
-    function getUserTokenAddress(
-        string memory name
-    ) external view returns (address) {
-        return deployedTokensByUser[governanceAddress][name];
-    }
-
+    // Add and start Auction
     function addToken(
         address token,
         address pairAddress,
@@ -224,16 +200,8 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
             stateToken
         );
     }
-    function isTokenRenounced(
-        address tokenAddress
-    ) external view returns (bool) {
-        return Ownable(tokenAddress).owner() == address(0);
-    }
 
-    function isTokenSupported(address token) public view returns (bool) {
-        return supportedTokens[token];
-    }
-
+    //used for only mainnet
     function getRatioPrice(address inputToken) public view returns (uint256) {
         require(supportedTokens[inputToken], "Unsupported token");
         IPair pair = IPair(pairAddresses[inputToken]);
@@ -286,14 +254,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         emit RewardDistributed(user, reward);
     }
-    function getTokenOwner(address token) public view returns (address) {
-        return tokenOwners[token];
-    }
-    function getTokensByOwner(
-        address _owner
-    ) public view returns (address[] memory) {
-        return ownerToTokens[_owner];
-    }
 
     function giveRewardToTokenOwner(address token) public nonReentrant {
         // Check if the token has a registered owner
@@ -338,61 +298,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         // Emit event for reward distribution
         emit RewardDistributed(claimant, rewardAmount);
-    }
-
-    function getNextClaimTime(
-        address token
-    ) public view returns (uint256 timeLeftInSeconds) {
-        address owner = tokenOwners[token];
-        require(owner != address(0), "Token has no registered owner");
-
-        address claimant = msg.sender == governanceAddress
-            ? governanceAddress
-            : owner;
-
-        uint256 lastClaim = lastClaimTime[claimant][token];
-
-        if (block.timestamp >= lastClaim + CLAIM_INTERVAL) {
-            return 0;
-        } else {
-            return (lastClaim + CLAIM_INTERVAL) - block.timestamp;
-        }
-    }
-
-    function hasAirdroppedClaim(
-        address user,
-        address inputToken
-    ) public view returns (bool) {
-        require(user != address(0), "Invalid user address");
-
-        uint256 currentDavHolding = dav.balanceOf(user);
-        uint256 lastHolding = lastDavHolding[user][inputToken];
-
-        // If user has claimed and no new DAV is added, return true
-        if (hasClaimed[user][inputToken] && currentDavHolding <= lastHolding) {
-            return true;
-        }
-
-        // Otherwise, either they haven't claimed, or they have new DAV, so return false
-        return false;
-    }
-
-    function getClaimableReward(
-        address user,
-        address inputToken
-    ) public view returns (uint256) {
-        require(user != address(0), "Invalid user address");
-
-        uint256 currentDavHolding = dav.balanceOf(user);
-        uint256 lastHolding = lastDavHolding[user][inputToken];
-        uint256 newDavContributed = currentDavHolding > lastHolding
-            ? currentDavHolding - lastHolding
-            : 0;
-
-        // Calculate reward as in distributeReward
-        uint256 reward = (newDavContributed * 10000 ether) / 1e18;
-
-        return reward;
     }
 
     function swapTokens(address user, address inputToken) public nonReentrant {
@@ -482,6 +387,16 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         }
 
         emit TokensSwapped(user, tokenIn, tokenOut, amountIn, amountOut);
+    }
+    function setTokenAddress(
+        address state,
+        address _dav
+    ) external onlyGovernance {
+        require(_dav != address(0), "Invalid dav address");
+        supportedTokens[state] = true;
+        supportedTokens[_dav] = true;
+        dav = Decentralized_Autonomous_Vaults_DAV_V2_1(payable(_dav));
+        stateToken = state;
     }
 
     function getUserHasSwapped(
@@ -662,6 +577,60 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         return multiplications;
     }
 
+    //Airdrop getter functions
+    function getClaimableReward(
+        address user,
+        address inputToken
+    ) public view returns (uint256) {
+        require(user != address(0), "Invalid user address");
+
+        uint256 currentDavHolding = dav.balanceOf(user);
+        uint256 lastHolding = lastDavHolding[user][inputToken];
+        uint256 newDavContributed = currentDavHolding > lastHolding
+            ? currentDavHolding - lastHolding
+            : 0;
+
+        // Calculate reward as in distributeReward
+        uint256 reward = (newDavContributed * 10000 ether) / 1e18;
+
+        return reward;
+    }
+    function getNextClaimTime(
+        address token
+    ) public view returns (uint256 timeLeftInSeconds) {
+        address owner = tokenOwners[token];
+        require(owner != address(0), "Token has no registered owner");
+
+        address claimant = msg.sender == governanceAddress
+            ? governanceAddress
+            : owner;
+
+        uint256 lastClaim = lastClaimTime[claimant][token];
+
+        if (block.timestamp >= lastClaim + CLAIM_INTERVAL) {
+            return 0;
+        } else {
+            return (lastClaim + CLAIM_INTERVAL) - block.timestamp;
+        }
+    }
+    function hasAirdroppedClaim(
+        address user,
+        address inputToken
+    ) public view returns (bool) {
+        require(user != address(0), "Invalid user address");
+
+        uint256 currentDavHolding = dav.balanceOf(user);
+        uint256 lastHolding = lastDavHolding[user][inputToken];
+
+        // If user has claimed and no new DAV is added, return true
+        if (hasClaimed[user][inputToken] && currentDavHolding <= lastHolding) {
+            return true;
+        }
+
+        // Otherwise, either they haven't claimed, or they have new DAV, so return false
+        return false;
+    }
+    //burned getter
     function getTotalStateBurned() public view returns (uint256) {
         return TotalBurnedStates;
     }
@@ -676,5 +645,34 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         address inputToken
     ) public view returns (uint256) {
         return TotalTokensBurned[inputToken];
+    }
+
+    // Getter for deployed token by name
+    function getUserTokenNames() external view returns (string[] memory) {
+        return userToTokenNames[governanceAddress];
+    }
+
+    function getUserTokenAddress(
+        string memory name
+    ) external view returns (address) {
+        return deployedTokensByUser[governanceAddress][name];
+    }
+    function getTokenOwner(address token) public view returns (address) {
+        return tokenOwners[token];
+    }
+    function getTokensByOwner(
+        address _owner
+    ) public view returns (address[] memory) {
+        return ownerToTokens[_owner];
+    }
+
+    function isTokenRenounced(
+        address tokenAddress
+    ) external view returns (bool) {
+        return Ownable(tokenAddress).owner() == address(0);
+    }
+
+    function isTokenSupported(address token) public view returns (bool) {
+        return supportedTokens[token];
     }
 }
