@@ -58,12 +58,12 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     uint256 private constant PRECISION = 1e18;
     uint256 public totalRewardDistributed;
     uint256 public totalAirdropMinted;
-    uint256 public constant AUCTION_INTERVAL = 1 hours;
-    uint256 public constant AUCTION_DURATION = 1 hours;
-    uint256 public constant REVERSE_DURATION = 1 hours;
+    uint256 public constant AUCTION_INTERVAL = 10 minutes;
+    uint256 public constant AUCTION_DURATION = 10 minutes;
+    uint256 public constant REVERSE_DURATION = 10 minutes;
     uint256 public constant MAX_AUCTIONS = 20;
     uint256 public constant OWNER_REWARD_AMOUNT = 2500000 * 1e18;
-    uint256 public constant CLAIM_INTERVAL = 1 hours;
+    uint256 public constant CLAIM_INTERVAL = 10 minutes;
     uint256 public constant MAX_SUPPLY = 500000000000 ether;
     uint256 public constant TIMEZONE_OFFSET = 19800; // GMT+5:30 in seconds (5.5 hours * 3600)
     uint256 public percentage = 1;
@@ -167,31 +167,38 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     ) external onlyGovernance {
         require(token != address(0), "Invalid token address");
         require(pairAddress != address(0), "Invalid pair address");
+        require(pairAddress != token, "Invalid pair address");
         require(!supportedTokens[token], "Token already added");
 
         supportedTokens[token] = true;
         tokenOwners[token] = _tokenOwner;
         pairAddresses[token] = pairAddress;
         ownerToTokens[_tokenOwner].push(token);
-        // Schedule first auction at 18:30 IST (GMT+5:30)
-        uint256 auctionStart = block.timestamp;
 
-        AuctionCycle storage cycle = auctionCycles[token][stateToken];
-        cycle.firstAuctionStart = auctionStart;
-        cycle.isInitialized = true;
-        cycle.auctionCount = 0;
+        // Schedule auction at 22:30 Dubai time (UTC+4)
+        uint256 auctionStart = _calculateDubaiAuctionStart();
 
-        auctionCycles[stateToken][token] = AuctionCycle({
+        // Initialize auction cycle for token → stateToken
+        AuctionCycle storage forwardCycle = auctionCycles[token][stateToken];
+        forwardCycle.firstAuctionStart = auctionStart;
+        forwardCycle.isInitialized = true;
+        forwardCycle.auctionCount = 0;
+
+        // Initialize auction cycle for stateToken → token
+        AuctionCycle memory reverseCycle = AuctionCycle({
             firstAuctionStart: auctionStart,
             isInitialized: true,
             auctionCount: 0
         });
+        auctionCycles[stateToken][token] = reverseCycle;
+
         dav.updateTokenStatus(
             _tokenOwner,
             governanceAddress,
             _tokenName,
             Decentralized_Autonomous_Vaults_DAV_V2_1.TokenStatus.Processed
         );
+
         emit TokenAdded(token, pairAddress);
         emit AuctionStarted(
             auctionStart,
@@ -199,6 +206,35 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
             token,
             stateToken
         );
+    }
+
+    function _calculateDubaiAuctionStart() internal view returns (uint256) {
+        uint256 dubaiOffset = 4 hours;
+        uint256 secondsInDay = 86400;
+        uint256 targetDubaiHour = 6;
+        uint256 targetDubaiMinute = 45;
+
+        // Get current time in Dubai
+        uint256 nowUTC = block.timestamp;
+        uint256 nowDubai = nowUTC + dubaiOffset;
+
+        // Start of today in Dubai time
+        uint256 todayStartDubai = (nowDubai / secondsInDay) * secondsInDay;
+
+        // Target time today: 22:30 Dubai time
+        uint256 targetTimeDubai = todayStartDubai +
+            targetDubaiHour *
+            1 hours +
+            targetDubaiMinute *
+            1 minutes;
+
+        // If we're past 22:30 Dubai time now, schedule for tomorrow 22:30
+        if (nowDubai >= targetTimeDubai) {
+            targetTimeDubai += secondsInDay;
+        }
+
+        // Convert back to UTC to get correct on-chain timestamp
+        return targetTimeDubai - dubaiOffset;
     }
 
     //used for only mainnet

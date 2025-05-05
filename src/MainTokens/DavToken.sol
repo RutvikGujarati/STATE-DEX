@@ -18,8 +18,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     //Global unit256 Variables
 
     // DAV TOken
-    uint256 public constant MAX_SUPPLY = 5000000 ether; // 5 Million DAV Tokens
-    uint256 public constant TOKEN_COST = 10 ether; // 500000 org
+    uint256 public constant MAX_SUPPLY = 10000000 ether; // 10 Million DAV Tokens
+    uint256 public constant TOKEN_COST = 10000 ether; // 500000 org
     uint256 public constant REFERRAL_BONUS = 5; // 5% bonus for referrers
     uint256 public constant LIQUIDITY_SHARE = 30; // 20% LIQUIDITY SHARE
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE
@@ -41,7 +41,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     //State burn
     uint256 public totalStateBurned;
     uint256 public constant TREASURY_CLAIM_PERCENTAGE = 10; // 10% of treasury for claims
-    uint256 public constant CLAIM_INTERVAL = 5 minutes; // 4 hour claim timer
+    uint256 public constant CLAIM_INTERVAL = 10 minutes; // 4 hour claim timer
     uint256 public constant MIN_DAV = 1 * 1e18;
 
     address public stateAddress;
@@ -467,7 +467,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         require(!isTokenNameUsed[_tokenName], "Token name already used");
 
         if (msg.sender != governance) {
-            require(msg.value == 1 ether, "Please give 100000 PLS");
+            require(msg.value == 10 ether, "Please give 100000 PLS");
 
             // Allocate all funds to State LP cycle like mintDAV
             uint256 stateLPShare = msg.value;
@@ -570,13 +570,13 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         // Calculate user share for this cycle
         uint256 userShare = totalStateBurned > 0
-            ? (userBurnedAmount[msg.sender] * 100 * 1e18) / totalStateBurned
-            : 100 * 1e18; // 100% if first burner
+            ? (userBurnedAmount[msg.sender] * 1e18) / totalStateBurned
+            : 1e18; // 100% if first burner
 
         // Allocate reward for the current cycle
         uint256 cycleAllocation = cycleTreasuryAllocation[currentCycle];
 
-        uint256 reward = (cycleAllocation * userShare) / (100 * 1e18);
+        uint256 reward = (cycleAllocation * userShare) / (1e18);
         userCycleRewards[msg.sender][currentCycle] += reward;
 
         burnHistory[msg.sender].push(
@@ -649,7 +649,31 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         return totalClaimable;
     }
+    function getExpectedClaimablePLS(
+        address user
+    ) public view returns (uint256) {
+        if (userBurnedAmount[user] == 0 || totalStateBurned == 0) {
+            return 0;
+        }
 
+        uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
+        uint256 totalExpected = 0;
+
+        // Iterate through all cycles, including the current one
+        for (uint256 i = 0; i <= currentCycle; i++) {
+            if (cycleTreasuryAllocation[i] == 0 || hasClaimedCycle[user][i]) {
+                continue;
+            }
+
+            uint256 userShare = (userBurnedAmount[user] * 1e18) /
+                totalStateBurned;
+            uint256 reward = (cycleTreasuryAllocation[i] * userShare) / 1e18;
+
+            totalExpected += reward;
+        }
+
+        return totalExpected;
+    }
     function claimPLS() external {
         address user = msg.sender;
         require(userBurnedAmount[user] > 0, "No burned tokens");
@@ -684,7 +708,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         require(totalReward > 0, "Nothing to claim");
         require(
-            address(this).balance >= totalReward,
+            (address(this).balance - holderFunds) >= totalReward,
             "Insufficient contract balance"
         );
 
@@ -732,7 +756,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         address user
     ) external view returns (uint256) {
         if (totalStateBurned == 0) return 0;
-        return (userBurnedAmount[user] * 100 * 1e18) / totalStateBurned / 1e18;
+        return (userBurnedAmount[user] * 10000) / totalStateBurned;
     }
 
     receive() external payable {}
