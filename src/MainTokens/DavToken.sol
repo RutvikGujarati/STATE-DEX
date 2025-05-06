@@ -41,7 +41,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     //State burn
     uint256 public totalStateBurned;
     uint256 public constant TREASURY_CLAIM_PERCENTAGE = 10; // 10% of treasury for claims
-    uint256 public constant CLAIM_INTERVAL = 10 minutes; // 4 hour claim timer
+    uint256 public constant CLAIM_INTERVAL = 24 hours; // 4 hour claim timer
     uint256 public constant MIN_DAV = 1 * 1e18;
 
     address public stateAddress;
@@ -155,7 +155,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         developmentWallet = _developmentWallet;
         stateToken = _stateToken;
         governance = _gov;
-        _mint(_gov, 500 ether);
+        _mint(_gov, 1000 ether);
         StateLP = IERC20(_stateToken);
         _transferOwnership(msg.sender);
         deployTime = block.timestamp;
@@ -467,7 +467,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         require(!isTokenNameUsed[_tokenName], "Token name already used");
 
         if (msg.sender != governance) {
-            require(msg.value == 10 ether, "Please give 100000 PLS");
+            require(msg.value == 100000 ether, "Please give 100000 PLS");
 
             // Allocate all funds to State LP cycle like mintDAV
             uint256 stateLPShare = msg.value;

@@ -58,12 +58,12 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     uint256 private constant PRECISION = 1e18;
     uint256 public totalRewardDistributed;
     uint256 public totalAirdropMinted;
-    uint256 public constant AUCTION_INTERVAL = 10 minutes;
-    uint256 public constant AUCTION_DURATION = 10 minutes;
-    uint256 public constant REVERSE_DURATION = 10 minutes;
+    uint256 public constant AUCTION_INTERVAL = 24 hours;
+    uint256 public constant AUCTION_DURATION = 24 hours;
+    uint256 public constant REVERSE_DURATION = 24 hours;
     uint256 public constant MAX_AUCTIONS = 20;
     uint256 public constant OWNER_REWARD_AMOUNT = 2500000 * 1e18;
-    uint256 public constant CLAIM_INTERVAL = 10 minutes;
+    uint256 public constant CLAIM_INTERVAL = 24 hours;
     uint256 public constant MAX_SUPPLY = 500000000000 ether;
     uint256 public constant TIMEZONE_OFFSET = 19800; // GMT+5:30 in seconds (5.5 hours * 3600)
     uint256 public percentage = 1;
@@ -211,8 +211,8 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     function _calculateDubaiAuctionStart() internal view returns (uint256) {
         uint256 dubaiOffset = 4 hours;
         uint256 secondsInDay = 86400;
-        uint256 targetDubaiHour = 6;
-        uint256 targetDubaiMinute = 45;
+        uint256 targetDubaiHour = 18;
+        uint256 targetDubaiMinute = 30;
 
         // Get current time in Dubai
         uint256 nowUTC = block.timestamp;
