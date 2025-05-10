@@ -58,7 +58,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     uint256 private constant PRECISION = 1e18;
     uint256 public totalRewardDistributed;
     uint256 public totalAirdropMinted;
-    uint256 public constant AUCTION_INTERVAL = 24 hours;
+    uint256 public constant AUCTION_INTERVAL = 5 days;
     uint256 public constant AUCTION_DURATION = 24 hours;
     uint256 public constant REVERSE_DURATION = 24 hours;
     uint256 public constant MAX_AUCTIONS = 20;
@@ -211,8 +211,8 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     function _calculateDubaiAuctionStart() internal view returns (uint256) {
         uint256 dubaiOffset = 4 hours;
         uint256 secondsInDay = 86400;
-        uint256 targetDubaiHour = 18;
-        uint256 targetDubaiMinute = 30;
+        uint256 targetDubaiHour = 17;
+        uint256 targetDubaiMinute = 0;
 
         // Get current time in Dubai
         uint256 nowUTC = block.timestamp;
@@ -463,7 +463,9 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         uint256 fullCycleLength = AUCTION_DURATION + AUCTION_INTERVAL;
         uint256 currentTime = block.timestamp;
-
+        if (currentTime < cycle.firstAuctionStart) {
+            return false;
+        }
         uint256 timeSinceStart = currentTime - cycle.firstAuctionStart;
         uint256 cycleNumber = timeSinceStart / fullCycleLength;
         if (cycleNumber >= MAX_AUCTIONS) return false;
@@ -490,7 +492,9 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         uint256 fullCycleLength = AUCTION_DURATION + AUCTION_INTERVAL;
         uint256 currentTime = block.timestamp;
-
+        if (currentTime < cycle.firstAuctionStart) {
+            return false;
+        }
         uint256 timeSinceStart = currentTime - cycle.firstAuctionStart;
         uint256 cycleNumber = timeSinceStart / fullCycleLength;
         if (cycleNumber >= MAX_AUCTIONS) return false;

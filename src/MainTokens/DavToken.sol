@@ -28,8 +28,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     uint256 public totalReferralRewardsDistributed;
     uint256 public unallocatedHolderDust; // Unused fractional dust from reward calc
     uint256 public mintedSupply; // Total Minted DAV Tokens
-    uint256 public liquidityFunds;
-    uint256 public developmentFunds;
     uint256 public stateLpTotalShare;
     uint256 public holderFunds; // Tracks ETH allocated for holder rewards
     uint256 public deployTime;
@@ -41,8 +39,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     //State burn
     uint256 public totalStateBurned;
     uint256 public constant TREASURY_CLAIM_PERCENTAGE = 10; // 10% of treasury for claims
-    uint256 public constant CLAIM_INTERVAL = 24 hours; // 4 hour claim timer
-    uint256 public constant MIN_DAV = 1 * 1e18;
+    uint256 public constant CLAIM_INTERVAL = 3 days; // 4 hour claim timer
+    uint256 public constant MIN_DAV = 10 * 1e18;
 
     address public stateAddress;
     address private constant BURN_ADDRESS =
@@ -461,8 +459,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     ) public payable {
         require(bytes(_tokenName).length > 0, "Please provide tokenName");
         require(
-            bytes(_tokenName).length <= 10,
-            "Token name must be 10 characters or fewer"
+            bytes(_tokenName).length <= 12,
+            "Token name must be 12 characters or fewer"
         );
         require(!isTokenNameUsed[_tokenName], "Token name already used");
 
@@ -552,7 +550,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     }
 
     // ------------------ StateLp functions ------------------------------
-
+    //STATE LP is the treasury to reward Market Makers
     function burnState(uint256 amount) external {
         require(balanceOf(msg.sender) >= MIN_DAV, "Need at least 10 DAV");
         require(amount > 0, "Burn amount must be > 0");
