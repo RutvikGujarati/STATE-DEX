@@ -55,9 +55,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     }
 
     //For Airdrop
-    uint256 private constant PRECISION = 1e18;
-    uint256 public totalRewardDistributed;
-    uint256 public totalAirdropMinted;
     uint256 public constant AUCTION_INTERVAL = 5 days;
     uint256 public constant AUCTION_DURATION = 24 hours;
     uint256 public constant REVERSE_DURATION = 24 hours;
@@ -65,7 +62,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     uint256 public constant OWNER_REWARD_AMOUNT = 2500000 * 1e18;
     uint256 public constant CLAIM_INTERVAL = 24 hours;
     uint256 public constant MAX_SUPPLY = 500000000000 ether;
-    uint256 public constant TIMEZONE_OFFSET = 19800; // GMT+5:30 in seconds (5.5 hours * 3600)
     uint256 public percentage = 1;
     address private constant BURN_ADDRESS =
         0x0000000000000000000000000000000000000369;
@@ -74,8 +70,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
     address public stateToken;
     address public governanceAddress;
 
-    mapping(address => uint256) public userBaseReward;
-    mapping(address => uint256) public lastDavMintTime;
     mapping(address => mapping(address => uint256)) public lastDavHolding; // user => token => last DAV holding
     mapping(address => mapping(address => uint256))
         public cumulativeDavHoldings;
@@ -96,7 +90,6 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
     event TokenDeployed(string name, address tokenAddress);
 
-    mapping(address => mapping(address => bool)) public approvals; // user => spender => approved
     mapping(address => mapping(address => mapping(address => mapping(uint256 => UserSwapInfo))))
         public userSwapTotalInfo; // user => inputToken => stateToken => cycle => UserSwapInfo
     mapping(address => mapping(address => AuctionCycle)) public auctionCycles; // inputToken => stateToken => AuctionCycle
@@ -346,8 +339,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         uint256 currentAuctionCycle = getCurrentAuctionCycle(inputToken);
         AuctionCycle storage cycle = auctionCycles[inputToken][stateToken];
-        uint256 currentCycleNumber = getCurrentAuctionCycle(inputToken);
-        require(currentCycleNumber < MAX_AUCTIONS, "Maximum auctions reached");
+        require(currentAuctionCycle < MAX_AUCTIONS, "Maximum auctions reached");
 
         UserSwapInfo storage userSwapInfo = userSwapTotalInfo[user][inputToken][
             stateToken
@@ -406,10 +398,10 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
                 IERC20(tokenOut).balanceOf(address(this)) > 0,
                 "Output token vault empty"
             );
-            IERC20(tokenIn).safeTransferFrom(user, BURN_ADDRESS, amountIn);
             TotalBurnedStates += amountIn;
             TotalTokensBurned[tokenIn] += amountIn;
             TotalStateBurnedByUser[user] += amountIn;
+            IERC20(tokenIn).safeTransferFrom(user, BURN_ADDRESS, amountIn);
             IERC20(tokenOut).safeTransfer(user, amountOut);
         } else {
             userSwapInfo.hasSwapped = true;
@@ -417,8 +409,8 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
                 IERC20(tokenOut).balanceOf(address(this)) > 0,
                 "Output token vault empty"
             );
-            IERC20(tokenIn).safeTransferFrom(user, BURN_ADDRESS, amountIn);
             TotalTokensBurned[tokenIn] += amountIn;
+            IERC20(tokenIn).safeTransferFrom(user, BURN_ADDRESS, amountIn);
             IERC20(tokenOut).safeTransfer(user, amountOut);
         }
 
@@ -589,9 +581,8 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
     function getOutPutAmount(address inputToken) public view returns (uint256) {
         require(supportedTokens[inputToken], "Unsupported token");
-        uint256 currentRatio = 1000;
+        uint256 currentRatio = getRatioPrice(inputToken);
         require(currentRatio > 0, "Invalid ratio");
-        uint256 currentRatioNormalized = 1000;
 
         uint256 userBalance = dav.balanceOf(msg.sender);
         if (userBalance == 0) {
@@ -604,9 +595,9 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
 
         uint256 multiplications;
         if (isReverseActive) {
-            multiplications = (onePercent * currentRatioNormalized) / 2;
+            multiplications = (onePercent * currentRatio) / 2;
         } else {
-            multiplications = (onePercent * currentRatioNormalized);
+            multiplications = (onePercent * currentRatio);
             require(
                 multiplications <= type(uint256).max / 2,
                 "Multiplication overflow"
