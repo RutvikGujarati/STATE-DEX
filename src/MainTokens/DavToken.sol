@@ -13,7 +13,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 {
     // IERC20 initialization
     using SafeERC20 for IERC20;
-    IERC20 public StateLP;
+    IERC20 public StateToken;
 
     //Global unit256 Variables
 
@@ -24,9 +24,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     uint256 public constant LIQUIDITY_SHARE = 30; // 20% LIQUIDITY SHARE
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE
     uint256 public constant HOLDER_SHARE = 10; // 10% HOLDER SHARE
-    // Add this to track total distributed rewards for accounting
     uint256 public totalReferralRewardsDistributed;
-    uint256 public unallocatedHolderDust; // Unused fractional dust from reward calc
     uint256 public mintedSupply; // Total Minted DAV Tokens
     uint256 public stateLpTotalShare;
     uint256 public holderFunds; // Tracks ETH allocated for holder rewards
@@ -42,7 +40,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     uint256 public constant CLAIM_INTERVAL = 3 days; // 4 hour claim timer
     uint256 public constant MIN_DAV = 10 * 1e18;
 
-    address public stateAddress;
     address private constant BURN_ADDRESS =
         0x0000000000000000000000000000000000000369;
     address public governance;
@@ -52,10 +49,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
     bool public transfersPaused = true;
 
-    struct BurnInfo {
-        uint256 totalBurned;
-        uint256 lastClaimedCycle; // Tracks last claimed cycle number
-    }
     struct UserBurn {
         uint256 amount;
         uint256 totalAtTime;
@@ -81,8 +74,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(address => mapping(uint256 => bool)) public hasClaimedCycle;
 
     mapping(address => UserBurn[]) public burnHistory;
-    mapping(address => BurnInfo) public userBurns;
-    mapping(address => uint256) public lastClaimedCycle;
 
     mapping(address => string) public userReferralCode; // User's own referral code
     mapping(string => address) public referralCodeToUser; // Referral code to user address
@@ -94,7 +85,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(address => uint256) public userRewardPerTokenPaid;
     mapping(address => uint256) public userMintedAmount;
     mapping(address => uint256) public lastBurnCycle;
-    mapping(uint256 => uint256) public cycleStateLpShare; // Treasury balance at cycle start
     // Mapping to track allocated rewards per cycle per user
     mapping(address => mapping(uint256 => uint256)) public userCycleRewards;
     // Track allocated treasury per cycle (10% of treasury contributions)
@@ -102,7 +92,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     // Track unclaimed PLS per cycle
     mapping(uint256 => uint256) public cycleUnclaimedPLS;
     // Track whether a cycle's rewards have been redistributed
-    mapping(uint256 => bool) public cycleRedistributed;
     // Track total burns per cycle for accurate share calculation
     mapping(uint256 => uint256) public cycleTotalBurned;
 
@@ -154,7 +143,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         stateToken = _stateToken;
         governance = _gov;
         _mint(_gov, 1000 ether);
-        StateLP = IERC20(_stateToken);
+        StateToken = IERC20(_stateToken);
         _transferOwnership(msg.sender);
         deployTime = block.timestamp;
     }
@@ -346,10 +335,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             uint256 effectiveSupply = totalSupply() - balanceOf(governance);
             uint256 rewardPerToken = (holderShare * 1e18) / effectiveSupply;
             uint256 usedHolderShare = (rewardPerToken * effectiveSupply) / 1e18;
-            uint256 residualDust = holderShare - usedHolderShare;
 
             holderFunds += usedHolderShare;
-            unallocatedHolderDust += residualDust;
             totalRewardPerTokenStored += rewardPerToken;
         }
 
@@ -549,13 +536,13 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         return allTokenEntries;
     }
 
-    // ------------------ StateLp functions ------------------------------
-    //STATE LP is the treasury to reward Market Makers
+    // ------------------ Burn functions ------------------------------
+    //the treasury to reward Market Makers
     function burnState(uint256 amount) external {
         require(balanceOf(msg.sender) >= MIN_DAV, "Need at least 10 DAV");
         require(amount > 0, "Burn amount must be > 0");
         require(
-            StateLP.allowance(msg.sender, address(this)) >= amount,
+            StateToken.allowance(msg.sender, address(this)) >= amount,
             "Insufficient allowance"
         );
 
@@ -589,7 +576,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         );
         lastBurnCycle[msg.sender] = currentCycle;
 
-        StateLP.safeTransferFrom(msg.sender, BURN_ADDRESS, amount);
+        StateToken.safeTransferFrom(msg.sender, BURN_ADDRESS, amount);
 
         emit TokensBurned(msg.sender, amount, currentCycle);
     }
@@ -725,7 +712,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         uint256 previousCycle = currentCycle - 1;
 
-        // Use cycleUnclaimedPLS for unclaimed funds, assuming it's properly initialized
         uint256 unclaimed = cycleUnclaimedPLS[previousCycle];
         // Cross-check with cycleUnclaimedPLS to ensure correctness
         return
