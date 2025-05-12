@@ -249,7 +249,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
             revert("Invalid pair");
         }
 
-        return ratio;
+        return ratio / 1e18;
     }
 
     /**
