@@ -14,9 +14,9 @@ contract STATE_Token_V2_1_Ratio_Swapping is ERC20 {
     ) ERC20(name, symbol) {
         require(_five != address(0) && _swap != address(0), "Invalid address");
 
-        uint256 Five_percent = (MAX_SUPPLY * 5) / 100;
-        uint256 ninetyFivePercent = MAX_SUPPLY - Five_percent;
-        _mint(_five, Five_percent);
+        uint256 fivePercent = (MAX_SUPPLY * 5) / 100;
+        uint256 ninetyFivePercent = MAX_SUPPLY - fivePercent;
+        _mint(_five, fivePercent);
         _mint(_swap, ninetyFivePercent);
     }
 }
