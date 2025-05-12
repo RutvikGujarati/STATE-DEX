@@ -445,10 +445,10 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         string memory _emoji
     ) public payable {
         require(bytes(_tokenName).length > 0, "Please provide tokenName");
-        require(
-            bytes(_tokenName).length <= 12,
-            "Token name must be 12 characters or fewer"
-        );
+        // require(
+        //     bytes(_tokenName).length <= 12,
+        //     "Token name must be 12 characters or fewer"
+        // );
         require(!isTokenNameUsed[_tokenName], "Token name already used");
 
         if (msg.sender != governance) {
