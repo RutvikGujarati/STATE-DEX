@@ -16,7 +16,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     //Global unit256 Variables
     // DAV TOken
     uint256 public constant MAX_SUPPLY = 10000000 ether; // 10 Million DAV Tokens
-    uint256 public constant TOKEN_COST = 10000 ether; // 1000000 org
+    uint256 public constant TOKEN_COST = 1000000 ether; // 1000000 org
     uint256 public constant REFERRAL_BONUS = 5; // 5% bonus for referrers
     uint256 public constant LIQUIDITY_SHARE = 30; // 20% LIQUIDITY SHARE
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE
@@ -28,6 +28,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     uint256 public deployTime;
     uint256 public totalLiquidityAllocated;
     uint256 public totalDevelopmentAllocated;
+    // @notice Tracks the number of DAV token holders
+    // @dev Intentionally does not decrement davHoldersCount as token transfers are permanently paused for non-governance addresses, ensuring holders remain in the system
     uint256 public davHoldersCount;
     uint256 public totalRewardPerTokenStored;
     //State burn
@@ -38,11 +40,18 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
     address private constant BURN_ADDRESS =
         0x0000000000000000000000000000000000000369;
-    address public governance;
+    // @notice The governance address with special privileges, set at deployment
+    // @dev Intentionally immutable to enforce a fixed governance structure; cannot be updated
+    address public immutable governance;
     address public liquidityWallet;
     address public developmentWallet;
     address public stateToken;
+    // @notice Transfers are permanently paused for non-governance addresses to enforce a no-transfer policy
+    // @dev This is an intentional design choice to restrict token transfers, except for governance operations
     bool public transfersPaused = true;
+    // @notice Mapping to track nonce for each user to ensure unique referral code generation
+    // @dev Incremented each time a referral code is generated for a user
+    mapping(address => uint256) private userNonce;
     struct UserBurn {
         uint256 amount;
         uint256 totalAtTime;
@@ -69,6 +78,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(string => address) public referralCodeToUser; // Referral code to user address
     mapping(address => uint256) public referralRewards; // Tracks referral rewards earned
     mapping(address => uint256) public lastMintTimestamp;
+    // @notice Tracks whether an address is a DAV holder
+    // @dev Set to true when a user mints tokens and never unset, as transfers are disabled, preventing users from exiting the holder system
     mapping(address => bool) private isDAVHolder;
     mapping(address => uint256) public holderRewards;
     mapping(address => uint256) public userRewardPerTokenPaid;
@@ -100,7 +111,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         uint256 amount
     );
     event ReferralCodeGenerated(address indexed user, string referralCode);
-    event StuckETHWithdrawn(address indexed owner, uint256 amount);
     event TokenNameAdded(address indexed user, string name);
     event TokenStatusUpdated(
         address indexed owner,
@@ -126,6 +136,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         stateToken = _stateToken;
         governance = _gov;
         _mint(_gov, 1000 ether);
+        mintedSupply += 1000 ether;
         StateToken = IERC20(_stateToken);
         _transferOwnership(msg.sender);
         deployTime = block.timestamp;
@@ -187,14 +198,28 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
                 (totalRewardPerTokenStored - userRewardPerTokenPaid[account])) /
             1e18 +
             holderRewards[account];
-    }    function _generateReferralCode(
+    }
+    // @notice Generates a unique referral code for a user
+    // @dev Uses user address, nonce, and block data to prevent collisions
+    // @param user The address of the user for whom the code is generated
+    // @return A unique alphanumeric referral code
+    function _generateReferralCode(
         address user
-    ) internal view returns (string memory) {
+    ) internal returns (string memory) {
+        // Increment nonce for the user to ensure uniqueness
+        userNonce[user]++;
+        // Use user address, nonce, and block data to generate a unique hash
         bytes32 hash = keccak256(
-            abi.encodePacked(user, block.timestamp, block.number)
+            abi.encodePacked(
+                user,
+                userNonce[user],
+                block.timestamp,
+                block.number
+            )
         );
         return _toAlphanumericString(hash, 8);
-    }    function _toAlphanumericString(
+    }
+    function _toAlphanumericString(
         bytes32 hash,
         uint256 length
     ) internal pure returns (string memory) {
@@ -282,7 +307,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             uint256 targetCycle = currentCycle + i;
             cycleTreasuryAllocation[targetCycle] += cycleAllocation;
             cycleUnclaimedPLS[targetCycle] += cycleAllocation;
-        }       // Distribute rewards to holders, excluding governance balance
+        } // Distribute rewards to holders, excluding governance balance
+        // @dev Total supply is never zero due to initial minting to governance during deployment, ensuring effectiveSupply calculations are safe
         if (holderShare > 0 && totalSupply() > balanceOf(governance)) {
             uint256 effectiveSupply = totalSupply() - balanceOf(governance);
             uint256 rewardPerToken = (holderShare * 1e18) / effectiveSupply;
@@ -331,7 +357,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             davHoldersCount += 1;
             emit HolderAdded(msg.sender);
         }
-        _updateRewards(msg.sender);
         _mint(msg.sender, amount);
         _updateRewards(msg.sender);
         emit TokensMinted(msg.sender, amount, msg.value);
@@ -574,6 +599,9 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     ) external view returns (uint256) {
         if (totalStateBurned == 0) return 0;
         return (userBurnedAmount[user] * 10000) / totalStateBurned;
-    } receive() external payable {}
-      fallback() external payable {}
+    }
+    receive() external payable {
+        revert("Direct ETH transfers not allowed");
+    }
+    fallback() external payable {}
 }
