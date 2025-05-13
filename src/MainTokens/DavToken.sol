@@ -47,7 +47,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     address public developmentWallet;
     address public stateToken;
     // @notice Transfers are permanently paused for non-governance addresses to enforce a no-transfer policy
-    // @dev This is an intentional design choice to restrict token transfers, except for governance operations
+    // @dev This is an intentional design choice to restrict token transfers and ensure the integrity of the airdrop mechanism. 
     bool public transfersPaused = true;
     // @notice Mapping to track nonce for each user to ensure unique referral code generation
     // @dev Incremented each time a referral code is generated for a user
@@ -204,7 +204,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             holderRewards[account];
     }
     // @notice Generates a unique referral code for a user
-    // @dev Uses user address, nonce, and block data to prevent collisions
+    // @dev Uses user address, nonce, and sender address to prevent collisions and miner influence
     // @param user The address of the user for whom the code is generated
     // @return A unique alphanumeric referral code
     function _generateReferralCode(
@@ -212,17 +212,20 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     ) internal returns (string memory) {
         // Increment nonce for the user to ensure uniqueness
         userNonce[user]++;
-        // Use user address, nonce, and block data to generate a unique hash
+
+        // Use user address, nonce, and sender to generate a secure, deterministic hash
         bytes32 hash = keccak256(
             abi.encodePacked(
                 user,
                 userNonce[user],
-                block.timestamp,
-                block.number
+                msg.sender, // Ensures that only the intended caller can generate a specific code
+                blockhash(block.number - 1) // adds unpredictability with lower miner influence
             )
         );
+
         return _toAlphanumericString(hash, 8);
     }
+
     function _toAlphanumericString(
         bytes32 hash,
         uint256 length
@@ -488,7 +491,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     }
     // ------------------ Burn functions ------------------------------
     //the treasury to reward Market Makers
-
     function burnState(uint256 amount) external {
         require(balanceOf(msg.sender) >= MIN_DAV, "Need at least 10 DAV");
         require(amount > 0, "Burn amount must be > 0");
@@ -497,13 +499,11 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             "Insufficient allowance"
         );
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
-
         // Check if user has unclaimed rewards from previous cycles
         require(
             !canClaim(msg.sender),
             "Must claim previous cycle rewards before burning"
         );
-
         // Update burn amounts
         totalStateBurned += amount;
         userBurnedAmount[msg.sender] += amount; // Track total burns by user
@@ -514,18 +514,15 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             ] = userCycleBurned[msg.sender][currentCycle - 1];
         }
         cycleTotalBurned[currentCycle] += amount;
-
         // Calculate user share for this cycle
         uint256 userShare = cycleTotalBurned[currentCycle] > 0
             ? (userCycleBurned[msg.sender][currentCycle] * 1e18) /
                 cycleTotalBurned[currentCycle]
             : 1e18; // 100% if first burner in cycle
-
         // Allocate reward for the current cycle
         uint256 cycleAllocation = cycleTreasuryAllocation[currentCycle];
         uint256 reward = (cycleAllocation * userShare) / (1e18);
         userCycleRewards[msg.sender][currentCycle] += reward;
-
         burnHistory[msg.sender].push(
             UserBurn({
                 amount: amount,
@@ -540,7 +537,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         StateToken.safeTransferFrom(msg.sender, BURN_ADDRESS, amount);
         emit TokensBurned(msg.sender, amount, currentCycle);
     }
-
     function canClaim(address user) public view returns (bool) {
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
         for (uint256 i = 0; i < currentCycle; i++) {
@@ -553,7 +549,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         }
         return false;
     }
-
     function getClaimablePLS(address user) public view returns (uint256) {
         uint256 currentCycle = getCurrentCycle();
         uint256 totalClaimable = 0;
@@ -581,7 +576,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         return totalClaimable;
     }
-
     function getExpectedClaimablePLS(
         address user
     ) public view returns (uint256) {
@@ -600,20 +594,16 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         }
         return totalExpected;
     }
-
     function claimPLS() external {
         address user = msg.sender;
         require(canClaim(user), "No claimable rewards");
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
         require(currentCycle > 0, "Claim period not started");
-
         uint256 totalReward = 0;
-
         for (uint256 i = 0; i < currentCycle; i++) {
             if (cycleTreasuryAllocation[i] == 0 || hasClaimedCycle[user][i]) {
                 continue;
             }
-
             uint256 reward = userCycleRewards[user][i]; // Already fixed at burn time
             if (reward > 0) {
                 totalReward += reward;
@@ -622,7 +612,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
                 hasClaimedCycle[user][i] = true;
                 userBurnClaimed[user][i] = true;
                 userCycleRewards[user][i] = 0;
-                userPreviousCycleBurned[user][i] = 0;
 
                 for (uint256 j = 0; j < burnHistory[user].length; j++) {
                     if (
@@ -634,19 +623,15 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
                 }
             }
         }
-
         require(totalReward > 0, "Nothing to claim");
         require(
             (address(this).balance - holderFunds) >= totalReward,
             "Insufficient contract balance"
         );
-
         (bool success, ) = payable(user).call{value: totalReward}("");
         require(success, "PLS transfer failed");
-
         emit RewardClaimed(user, totalReward, currentCycle);
     }
-
     function getCurrentCycle() public view returns (uint256) {
         return (block.timestamp - deployTime) / CLAIM_INTERVAL;
     }
@@ -678,7 +663,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         address user
     ) external view returns (uint256) {
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
-
         // Check if current time is still inside this cycle
         if (
             block.timestamp < deployTime + (currentCycle + 1) * CLAIM_INTERVAL
@@ -686,28 +670,21 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             // We're inside the current cycle – show live percentage
             uint256 userBurn = userCycleBurned[user][currentCycle];
             uint256 totalBurn = cycleTotalBurned[currentCycle];
-
             if (totalBurn == 0 || userBurn == 0) return 0;
-
             return (userBurn * 10000) / totalBurn; // basis points (10000 = 100.00%)
         } else {
             // Cycle has ended – show percentage from the previous cycle, if not yet claimed
             if (currentCycle == 0) return 0; // No previous cycle
-
             uint256 previousCycle = currentCycle - 1;
-
             if (
                 userBurnClaimed[user][previousCycle] ||
                 cycleTotalBurned[previousCycle] == 0
             ) {
                 return 0;
             }
-
             uint256 userBurn = userCycleBurned[user][previousCycle];
             uint256 totalBurn = cycleTotalBurned[previousCycle];
-
             if (totalBurn == 0 || userBurn == 0) return 0;
-
             return (userBurn * 10000) / totalBurn;
         }
     }
