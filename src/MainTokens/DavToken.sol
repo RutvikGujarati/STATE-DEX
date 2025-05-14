@@ -16,11 +16,12 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     //Global unit256 Variables
     // DAV TOken
     uint256 public constant MAX_SUPPLY = 10000000 ether; // 10 Million DAV Tokens
-    uint256 public constant TOKEN_COST = 10 ether; // 1000000 org
+    uint256 public constant TOKEN_COST = 1000000 ether; // 1000000 org
     uint256 public constant REFERRAL_BONUS = 5; // 5% bonus for referrers
     uint256 public constant LIQUIDITY_SHARE = 30; // 20% LIQUIDITY SHARE
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE
     uint256 public constant HOLDER_SHARE = 10; // 10% HOLDER SHARE
+	uint256 private constant BASIS_POINTS = 10000;
     uint256 public totalReferralRewardsDistributed;
     uint256 public mintedSupply; // Total Minted DAV Tokens
     uint256 public stateLpTotalShare;
@@ -35,7 +36,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     //State burn
     uint256 public totalStateBurned;
     uint256 public constant TREASURY_CLAIM_PERCENTAGE = 10; // 10% of treasury for claims
-    uint256 public constant CLAIM_INTERVAL = 5 minutes; // 4 hour claim timer
+    uint256 public constant CLAIM_INTERVAL = 3 days; // 4 hour claim timer
     uint256 public constant MIN_DAV = 1 * 1e18;
 
     address private constant BURN_ADDRESS =
@@ -47,7 +48,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     address public developmentWallet;
     address public stateToken;
     // @notice Transfers are permanently paused for non-governance addresses to enforce a no-transfer policy
-    // @dev This is an intentional design choice to restrict token transfers and ensure the integrity of the airdrop mechanism. 
+    // @dev This is an intentional design choice to restrict token transfers and ensure the integrity of the airdrop mechanism.
     bool public transfersPaused = true;
     // @notice Mapping to track nonce for each user to ensure unique referral code generation
     // @dev Incremented each time a referral code is generated for a user
@@ -89,8 +90,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(address => mapping(uint256 => uint256)) public userCycleRewards;
     mapping(address => mapping(uint256 => bool)) public userBurnClaimed;
     mapping(address => mapping(uint256 => uint256)) public userCycleBurned; // Tracks user burns per cycle
-    mapping(address => mapping(uint256 => uint256))
-        public userPreviousCycleBurned; // Tracks user burns for previous cycle
     // Track allocated treasury per cycle (10% of treasury contributions)
     mapping(uint256 => uint256) public cycleTreasuryAllocation;
     // Track unclaimed PLS per cycle
@@ -135,6 +134,10 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
                 _stateToken != address(0),
             "Wallet addresses cannot be zero"
         );
+        /**
+         * @dev These addresses are immutable after deployment.
+         * No setter functions are required intentionally to prevent misuse or misconfiguration.
+         */
         liquidityWallet = _liquidityWallet;
         developmentWallet = _developmentWallet;
         stateToken = _stateToken;
@@ -203,23 +206,26 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             1e18 +
             holderRewards[account];
     }
-    // @notice Generates a unique referral code for a user
-    // @dev Uses user address, nonce, and sender address to prevent collisions and miner influence
-    // @param user The address of the user for whom the code is generated
-    // @return A unique alphanumeric referral code
+    /**
+     * @notice Generates a unique referral code for a user
+     * @dev Includes user address, nonce, sender, and tx.origin to reduce miner influence
+     * @param user The address of the user for whom the code is generated
+     * @return A unique alphanumeric referral code
+     */
     function _generateReferralCode(
         address user
     ) internal returns (string memory) {
-        // Increment nonce for the user to ensure uniqueness
+        // Increment nonce for uniqueness
         userNonce[user]++;
 
-        // Use user address, nonce, and sender to generate a secure, deterministic hash
+        // Include tx.origin to reduce miner front-running vector
         bytes32 hash = keccak256(
             abi.encodePacked(
                 user,
                 userNonce[user],
-                msg.sender, // Ensures that only the intended caller can generate a specific code
-                blockhash(block.number - 1) // adds unpredictability with lower miner influence
+                msg.sender, // helps tie code to initiating address
+                tx.origin, // reduces miner predictability
+                block.timestamp // adds some entropy (less predictable than blockhash)
             )
         );
 
@@ -466,6 +472,18 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         }
         return pendingNames;
     }
+    /**
+     * @notice Allows only the governance to update the status of a user's token.
+     * @dev This function is restricted to the `governance` address.
+     *      Although `_owner` is passed externally, this is intentional to allow governance
+     *      to manage the status of any user's token entry. This is **not** a user-facing function.
+     *      Only governance can call this, so privilege escalation is **not** possible.
+     *
+     * @param _owner The user address whose token status is being updated.
+     * @param _gov The caller address, which must match the stored governance.
+     * @param _tokenName The name of the token whose status is being changed.
+     * @param _status The new status to assign to the token.
+     */
     function updateTokenStatus(
         address _owner,
         address _gov,
@@ -508,11 +526,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         totalStateBurned += amount;
         userBurnedAmount[msg.sender] += amount; // Track total burns by user
         userCycleBurned[msg.sender][currentCycle] += amount;
-        if (currentCycle > 0) {
-            userPreviousCycleBurned[msg.sender][
-                currentCycle - 1
-            ] = userCycleBurned[msg.sender][currentCycle - 1];
-        }
+
         cycleTotalBurned[currentCycle] += amount;
         // Calculate user share for this cycle
         uint256 userShare = cycleTotalBurned[currentCycle] > 0
@@ -576,24 +590,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         return totalClaimable;
     }
-    function getExpectedClaimablePLS(
-        address user
-    ) public view returns (uint256) {
-        uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
-        uint256 totalExpected = 0;
-        for (uint256 i = 0; i <= currentCycle; i++) {
-            if (cycleTreasuryAllocation[i] == 0 || hasClaimedCycle[user][i]) {
-                continue;
-            }
-            uint256 reward = userCycleRewards[user][i];
-            uint256 availableFunds = cycleUnclaimedPLS[i];
-            if (reward > availableFunds) {
-                reward = availableFunds;
-            }
-            totalExpected += reward;
-        }
-        return totalExpected;
-    }
+
     function claimPLS() external {
         address user = msg.sender;
         require(canClaim(user), "No claimable rewards");
@@ -605,6 +602,12 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
                 continue;
             }
             uint256 reward = userCycleRewards[user][i]; // Already fixed at burn time
+            require(
+                cycleUnclaimedPLS[cycle] >= reward,
+                "Insufficient cycle funds"
+            );
+            cycleUnclaimedPLS[cycle] -= reward;
+
             if (reward > 0) {
                 totalReward += reward;
 
@@ -671,7 +674,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             uint256 userBurn = userCycleBurned[user][currentCycle];
             uint256 totalBurn = cycleTotalBurned[currentCycle];
             if (totalBurn == 0 || userBurn == 0) return 0;
-            return (userBurn * 10000) / totalBurn; // basis points (10000 = 100.00%)
+            return (userBurn * BASIS_POINTS) / totalBurn; // basis points (10000 = 100.00%)
         } else {
             // Cycle has ended – show percentage from the previous cycle, if not yet claimed
             if (currentCycle == 0) return 0; // No previous cycle
@@ -685,7 +688,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             uint256 userBurn = userCycleBurned[user][previousCycle];
             uint256 totalBurn = cycleTotalBurned[previousCycle];
             if (totalBurn == 0 || userBurn == 0) return 0;
-            return (userBurn * 10000) / totalBurn;
+            return (userBurn * BASIS_POINTS) / totalBurn;
         }
     }
 
