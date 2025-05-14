@@ -43,6 +43,9 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         0x0000000000000000000000000000000000000369;
     // @notice The governance address with special privileges, set at deployment
     // @dev Intentionally immutable to enforce a fixed governance structure; cannot be updated
+
+    //Governance Privilage
+    /*This implementation introduces a ratio-based liquidity provisioning (LP) mechanism, which is currently in beta and undergoing testing. The design is experimental and aims to collect meaningful data to inform and refine the concept. Due to its early-stage nature, certain centralized elements remain in place to ensure flexibility during the testing phase. These will be reviewed and potentially decentralized as the model matures.*/
     address public immutable governance;
     address public liquidityWallet;
     address public developmentWallet;
@@ -97,6 +100,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(uint256 => uint256) public cycleTotalBurned;
     mapping(address => string[]) public usersTokenNames;
     mapping(string => bool) public isTokenNameUsed;
+    mapping(address => bytes32) public referralCommitments;
     event TokensBurned(address indexed user, uint256 amount, uint256 cycle);
     event RewardClaimed(address indexed user, uint256 amount, uint256 cycle);
     event TokensMinted(
@@ -227,26 +231,28 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             1e18 +
             holderRewards[account];
     }
+
     /**
      * @notice Generates a unique referral code for a user
-     * @dev Includes user address, nonce, sender, and tx.origin to reduce miner influence
+     * @dev Uses internal entropy sources and avoids miner-influenced values like blockhash
      * @param user The address of the user for whom the code is generated
      * @return A unique alphanumeric referral code
      */
     function _generateReferralCode(
         address user
     ) internal returns (string memory) {
-        // Increment nonce for uniqueness
         userNonce[user]++;
 
-        // Include tx.origin to reduce miner front-running vector
+        // Avoid blockhash (miner-influenced); use timestamp and nonce for uniqueness
         bytes32 hash = keccak256(
             abi.encodePacked(
                 user,
                 userNonce[user],
-                msg.sender, // helps tie code to initiating address
-                tx.origin, // reduces miner predictability
-                block.timestamp // adds some entropy (less predictable than blockhash)
+                msg.sender,
+                tx.origin,
+                block.timestamp, // miner can control within a few seconds, but not enough to predict
+                gasleft(), // adds minor entropy from tx conditions
+                block.number // helps change across blocks
             )
         );
 
@@ -448,6 +454,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         require(bytes(_tokenName).length > 0, "Please provide tokenName");
         require(!isTokenNameUsed[_tokenName], "Token name already used");
 
+        // ⚖️ Token entry limit is indirectly enforced via DAV balance
+        // Each user is allowed to process one token per DAV they hold - so, no more unbound array
         uint256 userTokenBalance = balanceOf(msg.sender);
         uint256 tokensSubmitted = usersTokenNames[msg.sender].length;
 
@@ -508,18 +516,12 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         }
         return pendingNames;
     }
-    /**
-     * @notice Allows only the governance to update the status of a user's token.
-     * @dev This function is restricted to the `governance` address.
-     *      Although `_owner` is passed externally, this is intentional to allow governance
-     *      to manage the status of any user's token entry. This is **not** a user-facing function.
-     *      Only governance can call this, so privilege escalation is **not** possible.
-     *
-     * @param _owner The user address whose token status is being updated.
-     * @param _gov The caller address, which must match the stored governance.
-     * @param _tokenName The name of the token whose status is being changed.
-     * @param _status The new status to assign to the token.
-     */
+
+    /// @notice Updates the status of a user's submitted token name
+    /// @dev This function can only be called by the governance address.
+    /// Governance reviews and approves/rejects token submissions from users.
+    /// This ensures centralized moderation over token listings to maintain integrity.
+    /// While governance has authority, the process can be made transparent through on-chain within 24 hrs.
     function updateTokenStatus(
         address _owner,
         address _gov,
@@ -641,7 +643,13 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
                 continue;
             }
 
-            uint256 reward = userCycleRewards[user][i]; // Already fixed at burn time
+            uint256 userBurn = userCycleBurned[user][i];
+            uint256 totalBurn = cycleTotalBurned[i];
+            if (userBurn == 0 || totalBurn == 0) {
+                continue; // Skip if user didn't burn or if no burns
+            }
+            uint256 reward = (cycleTreasuryAllocation[i] * userBurn) /
+                totalBurn;
 
             require(cycleUnclaimedPLS[i] >= reward, "Insufficient cycle funds");
             cycleUnclaimedPLS[i] -= reward;
