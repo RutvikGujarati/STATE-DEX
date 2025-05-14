@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
-import {Ratio_Swapping_Auctions_V2_1} from "../src/AuctionSwap/AuctionSwap.sol";
+import {Ratio_Swapping_Auctions_V2_1} from "../src/AuctionSwap.sol";
 contract AuctionSwapDeploy is Script {
     function run() external {
         address governance = 0xBAaB2913ec979d9d21785063a0e4141e5B787D28;

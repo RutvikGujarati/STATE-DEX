@@ -6,7 +6,8 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Decentralized_Autonomous_Vaults_DAV_V2_1} from "../MainTokens/DavToken.sol";
+import {Decentralized_Autonomous_Vaults_DAV_V2_1} from "./DavToken.sol";
+import {Token} from "./Tokens.sol";
 
 interface IPair {
     function getReserves()
@@ -17,25 +18,6 @@ interface IPair {
     function token0() external view returns (address);
 
     function token1() external view returns (address);
-}
-contract UserToken is ERC20, Ownable {
-    uint256 public constant MAX_SUPPLY = 500000000000 ether; // 500 billion
-
-    constructor(
-        string memory name,
-        string memory symbol,
-        address _One,
-        address _swap,
-        address _owner
-    ) ERC20(name, symbol) Ownable(_owner) {
-        require(_One != address(0) && _swap != address(0), "Invalid address");
-
-        uint256 onePercent = (MAX_SUPPLY * 1) / 100;
-        uint256 ninetyNinePercent = MAX_SUPPLY - onePercent;
-
-        _mint(_One, onePercent);
-        _mint(_swap, ninetyNinePercent);
-    }
 }
 
 contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
@@ -142,7 +124,7 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
             "Token address should not be zero"
         );
 
-        UserToken token = new UserToken(name, symbol, _One, _swap, _owner);
+        Token token = new Token(name, symbol, _One, _swap, _owner);
         deployedTokensByUser[msg.sender][name] = address(token);
         userToTokenNames[msg.sender].push(name);
         isTokenNameUsed[name] = true;
