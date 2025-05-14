@@ -21,7 +21,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     uint256 public constant LIQUIDITY_SHARE = 30; // 20% LIQUIDITY SHARE
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE
     uint256 public constant HOLDER_SHARE = 10; // 10% HOLDER SHARE
-	uint256 private constant BASIS_POINTS = 10000;
+    uint256 private constant BASIS_POINTS = 10000;
     uint256 public totalReferralRewardsDistributed;
     uint256 public mintedSupply; // Total Minted DAV Tokens
     uint256 public stateLpTotalShare;
@@ -134,10 +134,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
                 _stateToken != address(0),
             "Wallet addresses cannot be zero"
         );
-        /**
-         * @dev These addresses are immutable after deployment.
-         * No setter functions are required intentionally to prevent misuse or misconfiguration.
-         */
         liquidityWallet = _liquidityWallet;
         developmentWallet = _developmentWallet;
         stateToken = _stateToken;
@@ -147,7 +143,32 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         StateToken = IERC20(_stateToken);
         _transferOwnership(msg.sender);
         deployTime = block.timestamp;
-    } // Restriction of transffering
+    }
+    modifier onlyGovernance() {
+        require(msg.sender == governance, "Caller is not governance");
+        _;
+    }
+    function updateLiquidityWallet(
+        address _newLiquidityWallet
+    ) external onlyGovernance {
+        require(
+            _newLiquidityWallet != address(0),
+            "Liquidity wallet cannot be zero"
+        );
+        liquidityWallet = _newLiquidityWallet;
+    }
+
+    // Update function for developmentWallet
+    function updateDevelopmentWallet(
+        address _newDevelopmentWallet
+    ) external onlyGovernance {
+        require(
+            _newDevelopmentWallet != address(0),
+            "Development wallet cannot be zero"
+        );
+        developmentWallet = _newDevelopmentWallet;
+    }
+    // Restriction of transffering
     modifier whenTransfersAllowed() {
         require(
             !transfersPaused || msg.sender == governance,
@@ -325,7 +346,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             uint256 targetCycle = currentCycle + i;
             cycleTreasuryAllocation[targetCycle] += cycleAllocation;
             cycleUnclaimedPLS[targetCycle] += cycleAllocation;
-        } // Distribute rewards to holders, excluding governance balance
+        }
+        // Distribute rewards to holders, excluding governance balance
         // @dev Total supply is never zero due to initial minting to governance during deployment, ensuring effectiveSupply calculations are safe
         if (holderShare > 0 && totalSupply() > balanceOf(governance)) {
             uint256 effectiveSupply = totalSupply() - balanceOf(governance);
@@ -425,27 +447,41 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     ) public payable {
         require(bytes(_tokenName).length > 0, "Please provide tokenName");
         require(!isTokenNameUsed[_tokenName], "Token name already used");
+
+        uint256 userTokenBalance = balanceOf(msg.sender);
+        uint256 tokensSubmitted = usersTokenNames[msg.sender].length;
+
+        require(
+            userTokenBalance > tokensSubmitted,
+            "You need more DAV to process new token"
+        );
+
         if (msg.sender != governance) {
             require(msg.value == 100000 ether, "Please give 100000 PLS");
+
             // Allocate all funds to State LP cycle like mintDAV
             uint256 stateLPShare = msg.value;
             uint256 currentCycle = (block.timestamp - deployTime) /
                 CLAIM_INTERVAL;
             uint256 cycleAllocation = (stateLPShare *
                 TREASURY_CLAIM_PERCENTAGE) / 100;
+
             for (uint256 i = 0; i < 10; i++) {
                 uint256 targetCycle = currentCycle + i;
                 cycleTreasuryAllocation[targetCycle] += cycleAllocation;
                 cycleUnclaimedPLS[targetCycle] += cycleAllocation;
             }
         }
+
         usersTokenNames[msg.sender].push(_tokenName);
         allTokenEntries.push(
             TokenEntry(msg.sender, _tokenName, _emoji, TokenStatus.Pending)
         );
         isTokenNameUsed[_tokenName] = true;
+
         emit TokenNameAdded(msg.sender, _tokenName);
     }
+
     function getPendingTokenNames(
         address user
     ) public view returns (string[] memory) {
@@ -594,19 +630,21 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     function claimPLS() external {
         address user = msg.sender;
         require(canClaim(user), "No claimable rewards");
+
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
         require(currentCycle > 0, "Claim period not started");
+
         uint256 totalReward = 0;
+
         for (uint256 i = 0; i < currentCycle; i++) {
             if (cycleTreasuryAllocation[i] == 0 || hasClaimedCycle[user][i]) {
                 continue;
             }
+
             uint256 reward = userCycleRewards[user][i]; // Already fixed at burn time
-            require(
-                cycleUnclaimedPLS[cycle] >= reward,
-                "Insufficient cycle funds"
-            );
-            cycleUnclaimedPLS[cycle] -= reward;
+
+            require(cycleUnclaimedPLS[i] >= reward, "Insufficient cycle funds");
+            cycleUnclaimedPLS[i] -= reward;
 
             if (reward > 0) {
                 totalReward += reward;
@@ -626,15 +664,19 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
                 }
             }
         }
+
         require(totalReward > 0, "Nothing to claim");
         require(
             (address(this).balance - holderFunds) >= totalReward,
             "Insufficient contract balance"
         );
+
         (bool success, ) = payable(user).call{value: totalReward}("");
         require(success, "PLS transfer failed");
+
         emit RewardClaimed(user, totalReward, currentCycle);
     }
+
     function getCurrentCycle() public view returns (uint256) {
         return (block.timestamp - deployTime) / CLAIM_INTERVAL;
     }
