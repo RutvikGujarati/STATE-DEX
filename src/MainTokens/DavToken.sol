@@ -22,6 +22,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE
     uint256 public constant HOLDER_SHARE = 10; // 10% HOLDER SHARE
     uint256 private constant BASIS_POINTS = 10000;
+    uint256 private constant CYCLE_ALLOCATION_COUNT = 10;
     uint256 public totalReferralRewardsDistributed;
     uint256 public mintedSupply; // Total Minted DAV Tokens
     uint256 public stateLpTotalShare;
@@ -348,7 +349,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
         uint256 cycleAllocation = (stateLPShare * TREASURY_CLAIM_PERCENTAGE) /
             100;
-        for (uint256 i = 0; i < 10; i++) {
+        for (uint256 i = 0; i < CYCLE_ALLOCATION_COUNT; i++) {
             uint256 targetCycle = currentCycle + i;
             cycleTreasuryAllocation[targetCycle] += cycleAllocation;
             cycleUnclaimedPLS[targetCycle] += cycleAllocation;
@@ -449,38 +450,43 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     // ------------------ Gettting Token data info functions ------------------------------
     function ProcessYourToken(
         string memory _tokenName,
+        //not check emoji length validation.
         string memory _emoji
     ) public payable {
         require(bytes(_tokenName).length > 0, "Please provide tokenName");
         require(!isTokenNameUsed[_tokenName], "Token name already used");
 
         // ⚖️ Token entry limit is indirectly enforced via DAV balance
-        // Each user is allowed to process one token per DAV they hold - so, no more unbound array
-        uint256 userTokenBalance = balanceOf(msg.sender);
-        uint256 tokensSubmitted = usersTokenNames[msg.sender].length;
+        // Each user can process one token per DAV they hold. This means the number of tokens they can process is limited by their DAV balance.
+        uint256 userTokenBalance = balanceOf(msg.sender); // The amount of DAV the user holds
+        uint256 tokensSubmitted = usersTokenNames[msg.sender].length; // Number of tokens the user has already processed
 
+        // Ensure that the user has enough DAV to process a new token
         require(
             userTokenBalance > tokensSubmitted,
             "You need more DAV to process new token"
         );
 
+        // If not the governance, ensure the user sends the required PLS amount
         if (msg.sender != governance) {
             require(msg.value == 100000 ether, "Please give 100000 PLS");
 
-            // Allocate all funds to State LP cycle like mintDAV
+            // Allocate funds to State LP cycle similar to mintDAV logic
             uint256 stateLPShare = msg.value;
             uint256 currentCycle = (block.timestamp - deployTime) /
                 CLAIM_INTERVAL;
             uint256 cycleAllocation = (stateLPShare *
                 TREASURY_CLAIM_PERCENTAGE) / 100;
 
-            for (uint256 i = 0; i < 10; i++) {
+            // Allocate to each cycle over the defined number of periods
+            for (uint256 i = 0; i < CYCLE_ALLOCATION_COUNT; i++) {
                 uint256 targetCycle = currentCycle + i;
                 cycleTreasuryAllocation[targetCycle] += cycleAllocation;
                 cycleUnclaimedPLS[targetCycle] += cycleAllocation;
             }
         }
 
+        // Add the user's token name to their list and mark it as used
         usersTokenNames[msg.sender].push(_tokenName);
         allTokenEntries.push(
             TokenEntry(msg.sender, _tokenName, _emoji, TokenStatus.Pending)
@@ -547,6 +553,8 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     }
     // ------------------ Burn functions ------------------------------
     //the treasury to reward Market Makers
+    // Burn records are now tracked individually per cycle via `burnHistory` and `userCycleRewards`.
+    // This burn is logged in `burnHistory` and contributes to current cycle reward calculation.
     function burnState(uint256 amount) external {
         require(balanceOf(msg.sender) >= MIN_DAV, "Need at least 10 DAV");
         require(amount > 0, "Burn amount must be > 0");
@@ -560,9 +568,11 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             !canClaim(msg.sender),
             "Must claim previous cycle rewards before burning"
         );
-        // Update burn amounts
+        // keep track global burn amount.
         totalStateBurned += amount;
+        // keep this to track total amount burned by user
         userBurnedAmount[msg.sender] += amount; // Track total burns by user
+        // keep to track cycle amount burn by user
         userCycleBurned[msg.sender][currentCycle] += amount;
 
         cycleTotalBurned[currentCycle] += amount;
@@ -637,23 +647,25 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         require(currentCycle > 0, "Claim period not started");
 
         uint256 totalReward = 0;
-
+        // Iterate through all cycles up to the current one to allow for multiple claims across different cycles.
+        // This ensures that users can claim rewards for past cycles even if they didn't claim earlier.
+        // We continue checking all previous cycles to make sure rewards for all eligible cycles are processed,
+        // including those that were missed or left unclaimed by the user.
         for (uint256 i = 0; i < currentCycle; i++) {
             if (cycleTreasuryAllocation[i] == 0 || hasClaimedCycle[user][i]) {
                 continue;
             }
 
-            uint256 userBurn = userCycleBurned[user][i];
-            uint256 totalBurn = cycleTotalBurned[i];
-            if (userBurn == 0 || totalBurn == 0) {
-                continue; // Skip if user didn't burn or if no burns
-            }
-            uint256 reward = (cycleTreasuryAllocation[i] * userBurn) /
-                totalBurn;
+            uint256 reward = userCycleRewards[user][i]; // Pre-calculated reward at burn time
+            uint256 availableFunds = cycleUnclaimedPLS[i];
 
-            require(cycleUnclaimedPLS[i] >= reward, "Insufficient cycle funds");
+            // Ensure the user doesn't claim more than the available funds
+            reward = reward > availableFunds ? availableFunds : reward;
+
+            require(availableFunds >= reward, "Insufficient cycle funds");
+
+            // Adjust the available funds after claiming
             cycleUnclaimedPLS[i] -= reward;
-
             if (reward > 0) {
                 totalReward += reward;
 
