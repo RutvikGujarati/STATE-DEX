@@ -612,7 +612,16 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         emit TokensBurned(msg.sender, amount, currentCycle);
     }
     function canClaim(address user) public view returns (bool) {
-        return claimableCycleBitmap[user] != 0;
+        uint256 currentCycle = getCurrentCycle();
+        uint256 bitmap = claimableCycleBitmap[user];
+
+        for (uint256 i = 0; i < 256; i++) {
+            if (i >= currentCycle) break;
+            if ((bitmap & (1 << i)) != 0 && !hasClaimedCycle[user][i]) {
+                return true;
+            }
+        }
+        return false;
     }
 
     function getClaimablePLS(address user) public view returns (uint256) {
@@ -646,41 +655,54 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         address user = msg.sender;
         require(canClaim(user), "No claimable rewards");
 
-        uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
-        require(currentCycle > 0, "Claim period not started");
-
+        uint256 currentCycle = getCurrentCycle();
         uint256 totalReward = 0;
-        // Iterate through all cycles up to the current one to allow for multiple claims across different cycles.
-        // This ensures that users can claim rewards for past cycles even if they didn't claim earlier.
-        // We continue checking all previous cycles to make sure rewards for all eligible cycles are processed,
-        // including those that were missed or left unclaimed by the user.
-        for (uint256 i = 0; i < 256; i++) {
-            if ((claimableCycleBitmap[user] & (1 << i)) == 0) {
-                continue;
+        uint256 bitmap = claimableCycleBitmap[user];
+
+        // Loop over user's burn history to find unclaimed burns in claimable cycles
+        for (uint256 i = 0; i < burnHistory[user].length; i++) {
+            UserBurn storage entry = burnHistory[user][i];
+            uint256 cycle = entry.cycleNumber;
+
+            if (cycle >= currentCycle) continue; // Only past cycles can be claimed
+            if (entry.claimed) continue; // Already claimed burn entry
+            if ((bitmap & (1 << cycle)) == 0) continue; // Bitmap bit not set (shouldn't happen if data is consistent)
+            if (cycleTreasuryAllocation[cycle] == 0) continue; // No funds allocated for this cycle
+            if (cycleTotalBurned[cycle] == 0) continue; // Avoid division by zero
+
+            // Calculate reward based on amount and cycle's total burned and treasury allocation
+            uint256 reward = (entry.amount * cycleTreasuryAllocation[cycle]) /
+                cycleTotalBurned[cycle];
+
+            uint256 availableFunds = cycleUnclaimedPLS[cycle];
+            if (reward > availableFunds) reward = availableFunds;
+            require(availableFunds >= reward, "Insufficient cycle funds");
+
+            cycleUnclaimedPLS[cycle] -= reward;
+            entry.claimed = true;
+            hasClaimedCycle[user][cycle] = true;
+
+            // Clear bit in bitmap if no more unclaimed burns for this cycle
+            bool anyUnclaimedForCycle = false;
+            for (uint256 j = 0; j < burnHistory[user].length; j++) {
+                if (
+                    burnHistory[user][j].cycleNumber == cycle &&
+                    !burnHistory[user][j].claimed
+                ) {
+                    anyUnclaimedForCycle = true;
+                    break;
+                }
+            }
+            if (!anyUnclaimedForCycle) {
+                claimableCycleBitmap[user] &= ~(1 << cycle);
             }
 
-            if (cycleTreasuryAllocation[i] == 0 || hasClaimedCycle[user][i]) {
-                continue;
-            }
-
-            uint256 reward = userCycleRewards[user][i];
-            uint256 availableFunds = cycleUnclaimedPLS[i];
-            reward = reward > availableFunds ? availableFunds : reward;
-
-            cycleUnclaimedPLS[i] -= reward;
             totalReward += reward;
-
-            hasClaimedCycle[user][i] = true;
-            userBurnClaimed[user][i] = true;
-            userCycleRewards[user][i] = 0;
-
-            // Clear the bit after claiming
-            claimableCycleBitmap[user] &= ~(1 << i);
         }
 
         require(totalReward > 0, "Nothing to claim");
         require(
-            (address(this).balance - holderFunds) >= totalReward,
+            address(this).balance - holderFunds >= totalReward,
             "Insufficient contract balance"
         );
 

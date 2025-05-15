@@ -399,14 +399,16 @@ contract Ratio_Swapping_Auctions_V2_1 is Ownable(msg.sender), ReentrancyGuard {
         emit TokensSwapped(user, tokenIn, tokenOut, amountIn, amountOut);
     }
     function setTokenAddress(
-        address state,
+        address _state,
         address _dav
     ) external onlyGovernance {
+        require(_state != address(0), "Invalid state address");
         require(_dav != address(0), "Invalid dav address");
-        supportedTokens[state] = true;
+
+        supportedTokens[_state] = true;
         supportedTokens[_dav] = true;
         dav = Decentralized_Autonomous_Vaults_DAV_V2_1(payable(_dav));
-        stateToken = state;
+        stateToken = _state;
     }
 
     function getUserHasSwapped(
