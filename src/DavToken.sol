@@ -22,7 +22,9 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     uint256 public constant DEVELOPMENT_SHARE = 5; // 5% DEV SHARE
     uint256 public constant HOLDER_SHARE = 10; // 10% HOLDER SHARE
     uint256 private constant BASIS_POINTS = 10000;
+    //cycle assinging to 10. not want to update or configure later
     uint256 private constant CYCLE_ALLOCATION_COUNT = 10;
+    uint256 private constant TOKEN_PROCESSING_FEE = 100000 ether;
     uint256 public totalReferralRewardsDistributed;
     uint256 public mintedSupply; // Total Minted DAV Tokens
     uint256 public stateLpTotalShare;
@@ -75,6 +77,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         string emoji; // 🆕 Add this field
         TokenStatus status;
     }
+    // already assign as max tokens user can pass is according to dav amount. so not require to bound with 1000 limit.
     TokenEntry[] public allTokenEntries;
     mapping(address => uint256) public userBurnedAmount;
     mapping(address => mapping(uint256 => bool)) public hasClaimedCycle;
@@ -91,13 +94,13 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     mapping(address => uint256) public userMintedAmount;
     mapping(address => uint256) public lastBurnCycle;
     // Mapping to track allocated rewards per cycle per user
-    mapping(address => mapping(uint256 => uint256)) public userCycleRewards;
     mapping(address => mapping(uint256 => bool)) public userBurnClaimed;
     mapping(address => mapping(uint256 => uint256)) public userCycleBurned; // Tracks user burns per cycle
     // Track allocated treasury per cycle (10% of treasury contributions)
     mapping(uint256 => uint256) public cycleTreasuryAllocation;
     // Track unclaimed PLS per cycle
     mapping(uint256 => uint256) public cycleUnclaimedPLS;
+    mapping(address => uint256) internal claimableCycleBitmap;
     mapping(uint256 => uint256) public cycleTotalBurned;
     mapping(address => string[]) public usersTokenNames;
     mapping(string => bool) public isTokenNameUsed;
@@ -448,9 +451,17 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         return lastMintTimestamp[user];
     }
     // ------------------ Gettting Token data info functions ------------------------------
+    /**
+     * @notice Processes a token with a name and emoji.
+     * @dev No commit-reveal scheme is used as users are expected to verify governance behavior on-chain.
+     *      While first-come-first-served naming could allow front-running, users are aware of and accept this risk.
+     *      Token names are locked immediately to prevent duplicate submissions.
+     *      Each user can process tokens up to the number of DAV they hold.
+     *      Governance is trusted to operate transparently and verifiably.
+     */
     function ProcessYourToken(
         string memory _tokenName,
-        //not check emoji length validation.
+        //not check emoji length validation. user can pass any length of emoji because that is fun part for users of this proceesing.
         string memory _emoji
     ) public payable {
         require(bytes(_tokenName).length > 0, "Please provide tokenName");
@@ -469,7 +480,10 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         // If not the governance, ensure the user sends the required PLS amount
         if (msg.sender != governance) {
-            require(msg.value == 100000 ether, "Please give 100000 PLS");
+            require(
+                msg.value == TOKEN_PROCESSING_FEE,
+                "Please give 100000 PLS"
+            );
 
             // Allocate funds to State LP cycle similar to mintDAV logic
             uint256 stateLPShare = msg.value;
@@ -495,7 +509,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
 
         emit TokenNameAdded(msg.sender, _tokenName);
     }
-
     function getPendingTokenNames(
         address user
     ) public view returns (string[] memory) {
@@ -522,7 +535,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         }
         return pendingNames;
     }
-
     /// @notice Updates the status of a user's submitted token name
     /// @dev This function can only be called by the governance address.
     /// Governance reviews and approves/rejects token submissions from users.
@@ -553,7 +565,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
     }
     // ------------------ Burn functions ------------------------------
     //the treasury to reward Market Makers
-    // Burn records are now tracked individually per cycle via `burnHistory` and `userCycleRewards`.
+    // Burn records are now tracked individually per cycle via `burnHistory`.
     // This burn is logged in `burnHistory` and contributes to current cycle reward calculation.
     function burnState(uint256 amount) external {
         require(balanceOf(msg.sender) >= MIN_DAV, "Need at least 10 DAV");
@@ -563,6 +575,7 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
             "Insufficient allowance"
         );
         uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
+        claimableCycleBitmap[msg.sender] |= (1 << currentCycle);
         // Check if user has unclaimed rewards from previous cycles
         require(
             !canClaim(msg.sender),
@@ -571,10 +584,10 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         // keep track global burn amount.
         totalStateBurned += amount;
         // keep this to track total amount burned by user
-        userBurnedAmount[msg.sender] += amount; // Track total burns by user
-        // keep to track cycle amount burn by user
+        userBurnedAmount[msg.sender] += amount;
+        // keep track this for  cycle amount burn by user
         userCycleBurned[msg.sender][currentCycle] += amount;
-
+        //keep track to see totalBurned by all users in cycle
         cycleTotalBurned[currentCycle] += amount;
         // Calculate user share for this cycle
         uint256 userShare = cycleTotalBurned[currentCycle] > 0
@@ -584,7 +597,6 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         // Allocate reward for the current cycle
         uint256 cycleAllocation = cycleTreasuryAllocation[currentCycle];
         uint256 reward = (cycleAllocation * userShare) / (1e18);
-        userCycleRewards[msg.sender][currentCycle] += reward;
         burnHistory[msg.sender].push(
             UserBurn({
                 amount: amount,
@@ -600,25 +612,16 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         emit TokensBurned(msg.sender, amount, currentCycle);
     }
     function canClaim(address user) public view returns (bool) {
-        uint256 currentCycle = (block.timestamp - deployTime) / CLAIM_INTERVAL;
-        for (uint256 i = 0; i < currentCycle; i++) {
-            if (cycleTreasuryAllocation[i] == 0) {
-                continue;
-            }
-            if (userCycleRewards[user][i] > 0 && !hasClaimedCycle[user][i]) {
-                return true; // User has claimable rewards in at least one past cycle
-            }
-        }
-        return false;
+        return claimableCycleBitmap[user] != 0;
     }
-    function getClaimablePLS(address user) public view returns (uint256) {
-        uint256 currentCycle = getCurrentCycle();
-        uint256 totalClaimable = 0;
 
-        for (uint256 i = 0; i <= currentCycle; i++) {
-            if (cycleTreasuryAllocation[i] == 0 || hasClaimedCycle[user][i]) {
-                continue;
-            }
+    function getClaimablePLS(address user) public view returns (uint256) {
+        uint256 totalClaimable = 0;
+        uint256 bitmap = claimableCycleBitmap[user];
+
+        for (uint256 i = 0; i < 256; i++) {
+            if ((bitmap & (1 << i)) == 0) continue;
+            if (hasClaimedCycle[user][i]) continue;
 
             uint256 userBurn = userCycleBurned[user][i];
             uint256 totalBurn = cycleTotalBurned[i];
@@ -651,38 +654,28 @@ contract Decentralized_Autonomous_Vaults_DAV_V2_1 is
         // This ensures that users can claim rewards for past cycles even if they didn't claim earlier.
         // We continue checking all previous cycles to make sure rewards for all eligible cycles are processed,
         // including those that were missed or left unclaimed by the user.
-        for (uint256 i = 0; i < currentCycle; i++) {
+        for (uint256 i = 0; i < 256; i++) {
+            if ((claimableCycleBitmap[user] & (1 << i)) == 0) {
+                continue;
+            }
+
             if (cycleTreasuryAllocation[i] == 0 || hasClaimedCycle[user][i]) {
                 continue;
             }
 
-            uint256 reward = userCycleRewards[user][i]; // Pre-calculated reward at burn time
+            uint256 reward = userCycleRewards[user][i];
             uint256 availableFunds = cycleUnclaimedPLS[i];
-
-            // Ensure the user doesn't claim more than the available funds
             reward = reward > availableFunds ? availableFunds : reward;
 
-            require(availableFunds >= reward, "Insufficient cycle funds");
-
-            // Adjust the available funds after claiming
             cycleUnclaimedPLS[i] -= reward;
-            if (reward > 0) {
-                totalReward += reward;
+            totalReward += reward;
 
-                // Per-user reset
-                hasClaimedCycle[user][i] = true;
-                userBurnClaimed[user][i] = true;
-                userCycleRewards[user][i] = 0;
+            hasClaimedCycle[user][i] = true;
+            userBurnClaimed[user][i] = true;
+            userCycleRewards[user][i] = 0;
 
-                for (uint256 j = 0; j < burnHistory[user].length; j++) {
-                    if (
-                        burnHistory[user][j].cycleNumber == i &&
-                        !burnHistory[user][j].claimed
-                    ) {
-                        burnHistory[user][j].claimed = true;
-                    }
-                }
-            }
+            // Clear the bit after claiming
+            claimableCycleBitmap[user] &= ~(1 << i);
         }
 
         require(totalReward > 0, "Nothing to claim");
